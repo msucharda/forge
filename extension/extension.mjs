@@ -38,53 +38,25 @@ function isDangerousCommand(cmd) {
     return null;
 }
 
-function parseFrontmatter(content) {
-    const normalized = content.replace(/\r\n/g, "\n");
-    const match = normalized.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-    if (!match) return null;
-    const meta = {};
-    for (const line of match[1].split("\n")) {
-        const idx = line.indexOf(":");
-        if (idx > 0) {
-            meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-        }
-    }
-    return { meta, body: match[2].trim() };
-}
-
 // ---------------------------------------------------------------------------
-// Agent loader — reads agents/*.agent.md and registers as customAgents
+// Agent discovery — reads agents/*.agent.md names for logging
+// (Agent registration is handled by plugin.json, not the extension SDK)
 // ---------------------------------------------------------------------------
 
-function loadAgents() {
+function discoverAgentNames() {
     if (!existsSync(AGENTS_DIR)) return [];
     return readdirSync(AGENTS_DIR)
         .filter((f) => f.endsWith(".agent.md"))
-        .map((f) => {
-            const content = readFileSync(join(AGENTS_DIR, f), "utf-8");
-            const parsed = parseFrontmatter(content);
-            if (!parsed) return null;
-            return {
-                name: parsed.meta.name || f.replace(".agent.md", ""),
-                displayName: (parsed.meta.name || f.replace(".agent.md", "")).replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-                description: parsed.meta.description || "",
-                prompt: parsed.body,
-                tools: null, // all tools available
-            };
-        })
-        .filter(Boolean);
+        .map((f) => f.replace(".agent.md", ""));
 }
 
-const agents = loadAgents();
-const agentNames = agents.map((a) => a.name);
+const agentNames = discoverAgentNames();
 
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
 const session = await joinSession({
-    customAgents: agents,
-
     hooks: {
         onSessionStart: async (input) => {
             const names = agentNames.length > 0

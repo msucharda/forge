@@ -71,6 +71,9 @@ fi
 # Verify source has required files
 [ -f "${SOURCE_DIR}/extension/extension.mjs" ] || die "extension/extension.mjs not found in source"
 [ -d "${SOURCE_DIR}/agents" ] || die "agents/ directory not found in source"
+[ -f "${SOURCE_DIR}/plugin.json" ] || die "plugin.json not found in source"
+[ -d "${SOURCE_DIR}/skills" ] || die "skills/ directory not found in source"
+[ -d "${SOURCE_DIR}/commands" ] || die "commands/ directory not found in source"
 [ -f "${SOURCE_DIR}/version.txt" ] || die "version.txt not found in source"
 
 NEW_VERSION="$(cat "${SOURCE_DIR}/version.txt" | tr -d '[:space:]')"
@@ -141,6 +144,22 @@ mkdir -p "${INSTALL_DIR}/agents"
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
 ok "Installed extension.mjs"
 
+# Copy plugin manifest
+cp "${SOURCE_DIR}/plugin.json" "${INSTALL_DIR}/plugin.json"
+ok "Installed plugin.json"
+
+# Copy skills
+rm -rf "${INSTALL_DIR}/skills"
+cp -r "${SOURCE_DIR}/skills" "${INSTALL_DIR}/skills"
+skill_count=$(find "${INSTALL_DIR}/skills" -name "SKILL.md" 2>/dev/null | wc -l)
+ok "Installed ${skill_count} skill(s)"
+
+# Copy commands
+rm -rf "${INSTALL_DIR}/commands"
+cp -r "${SOURCE_DIR}/commands" "${INSTALL_DIR}/commands"
+cmd_count=$(ls -1 "${INSTALL_DIR}/commands/"*.md 2>/dev/null | wc -l)
+ok "Installed ${cmd_count} command(s)"
+
 # Copy agent files
 cp "${SOURCE_DIR}/agents/"*.agent.md "${INSTALL_DIR}/agents/" 2>/dev/null || true
 agent_count=$(ls -1 "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null | wc -l)
@@ -177,6 +196,8 @@ fi
 printf "\n"
 printf "  ${BOLD}Location${NC}:  ${INSTALL_DIR}\n"
 printf "  ${BOLD}Agents${NC}:    ${INSTALL_DIR}/agents/\n"
+printf "  ${BOLD}Skills${NC}:    ${INSTALL_DIR}/skills/\n"
+printf "  ${BOLD}Commands${NC}:  ${INSTALL_DIR}/commands/\n"
 printf "  ${BOLD}Extension${NC}: ${INSTALL_DIR}/extension.mjs\n"
 printf "\n"
 

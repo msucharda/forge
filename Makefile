@@ -23,11 +23,20 @@ uninstall:
 		printf "\033[0;32m✔\033[0m Removed backup directory\n"; \
 	fi
 
-## lint — Check extension.mjs syntax
+## lint — Check extension.mjs syntax and plugin.json validity
 lint:
 	@node --check extension/extension.mjs 2>/dev/null && \
 		printf "\033[0;32m✔\033[0m extension.mjs syntax OK\n" || \
 		(printf "\033[0;31m✖\033[0m extension.mjs has syntax errors\n" && exit 1)
+	@node -e "JSON.parse(require('fs').readFileSync('plugin.json','utf-8'))" 2>/dev/null && \
+		printf "\033[0;32m✔\033[0m plugin.json is valid JSON\n" || \
+		(printf "\033[0;31m✖\033[0m plugin.json is not valid JSON\n" && exit 1)
+	@for f in skills/*/SKILL.md commands/*.md agents/*.agent.md; do \
+		if [ -f "$$f" ]; then \
+			head -1 "$$f" | grep -q "^---$$" || \
+				(printf "\033[0;31m✖\033[0m $$f missing frontmatter\n" && exit 1); \
+		fi; \
+	done && printf "\033[0;32m✔\033[0m All markdown files have frontmatter\n"
 
 ## test — Placeholder for future tests
 test: lint

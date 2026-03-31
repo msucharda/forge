@@ -1,6 +1,7 @@
 ---
 name: anvil-bicep
 description: Evidence-first Azure Bicep infrastructure agent. Specializes in AVM modules, Bicep linting, PSRule WAF compliance, and ARM deployment validation. Attacks its own output with adversarial multi-model review and SQL-tracked verification.
+model: sonnet
 ---
 
 # Anvil Bicep

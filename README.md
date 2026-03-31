@@ -9,6 +9,22 @@ Evidence-first coding agents for [GitHub Copilot CLI](https://docs.github.com/en
 | **anvil** | General-purpose coding agent. Evidence-first workflow with adversarial review, SQL-tracked verification, and automatic git hygiene. |
 | **anvil-bicep** | Azure Bicep infrastructure agent. Specializes in AVM modules, Bicep linting, PSRule WAF compliance, and ARM deployment validation. |
 
+## Skills
+
+Skills tell the main model **when to activate** each agent automatically based on user intent:
+
+| Skill | Triggers On |
+|-------|-------------|
+| **anvil-code** | Code implementation, fixes, refactors — any non-infrastructure coding task |
+| **anvil-bicep** | `.bicep` / `.bicepparam` files, AVM modules, Azure infrastructure changes |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/verify` | Run Anvil verification checks on current changes |
+| `/evidence` | Generate an evidence bundle for the current task |
+
 ## Install
 
 **One-liner** (requires `git`):
@@ -58,11 +74,49 @@ make uninstall
 
 ```
 ~/.copilot/extensions/anvil/
-├── extension.mjs          # Extension — tools, hooks, agent loader
+├── plugin.json            # Plugin manifest — declares agents, skills, commands
+├── extension.mjs          # Extension — tools and hooks
 ├── version.txt            # Installed version
-└── agents/                # Agent definitions (editable!)
-    ├── anvil.agent.md
-    └── anvil-bicep.agent.md
+├── agents/                # Agent definitions (editable!)
+│   ├── anvil.agent.md
+│   └── anvil-bicep.agent.md
+├── skills/                # Routing skills — auto-activate agents by intent
+│   ├── anvil-code/
+│   │   └── SKILL.md
+│   └── anvil-bicep/
+│       └── SKILL.md
+└── commands/              # Slash commands
+    ├── verify.md
+    └── evidence.md
+```
+
+## Architecture
+
+Anvil uses **two complementary systems**:
+
+| Concern | System | Files |
+|---------|--------|-------|
+| **Routing** (which agent handles the task) | Plugin system (`plugin.json`) | `agents/`, `skills/`, `commands/` |
+| **Runtime** (tools, guardrails, hooks) | Extension SDK (`extension.mjs`) | `extension.mjs` |
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Copilot CLI Main Model                                          │
+│                                                                  │
+│  Reads plugin.json → discovers skills, commands, agents          │
+│  Connects to extension.mjs → gets tools and hooks                │
+└────────┬──────────────┬──────────────┬──────────────┬────────────┘
+         │              │              │              │
+   ┌─────▼─────┐  ┌─────▼─────┐  ┌────▼────┐  ┌─────▼──────┐
+   │  Skills   │  │ Commands  │  │ Agents  │  │ Extension  │
+   │           │  │           │  │         │  │            │
+   │ anvil-    │  │ /verify   │  │ anvil   │  │ Tools:     │
+   │  code     │  │ /evidence │  │ anvil-  │  │  git_check │
+   │ anvil-    │  │           │  │  bicep  │  │  verify    │
+   │  bicep    │  │           │  │         │  │  bicep_*   │
+   └───────────┘  └───────────┘  └─────────┘  │ Hooks:     │
+                                              │  guardrails│
+                                              └────────────┘
 ```
 
 ## Extension Tools
@@ -100,13 +154,14 @@ $EDITOR ~/.copilot/extensions/anvil/agents/anvil.agent.md
 
 ### Add a New Agent
 
-Drop a `.agent.md` file in the `agents/` directory. The extension auto-discovers and registers it:
+Drop a `.agent.md` file in the `agents/` directory and add a corresponding skill in `skills/`:
 
 ```bash
 cat > ~/.copilot/extensions/anvil/agents/anvil-terraform.agent.md << 'EOF'
 ---
 name: anvil-terraform
 description: Evidence-first Terraform agent with HCL validation and plan verification.
+model: sonnet
 ---
 
 # Anvil Terraform
@@ -123,6 +178,7 @@ Reload with `/clear` — the new agent appears automatically.
 ---
 name: agent-name          # Required: unique identifier
 description: One-liner    # Required: shown in agent listings
+model: sonnet             # Optional: model for sub-agent dispatch
 ---
 
 # Agent Title
@@ -133,7 +189,7 @@ Full behavioral instructions in markdown...
 ## Development
 
 ```bash
-# Check extension syntax
+# Check extension syntax, plugin.json, and frontmatter
 make lint
 
 # Run all checks
@@ -143,30 +199,10 @@ make test
 make install
 ```
 
-## How It Works
-
-```
-┌──────────────────────┐         ┌──────────────────────────────────┐
-│  Copilot CLI         │ JSON-RPC│  Anvil Extension Process         │
-│                      │◄───────►│                                  │
-│  Routes tool calls   │  stdio  │  1. Reads agents/*.agent.md      │
-│  Sends hook events   │         │  2. Registers customAgents       │
-│  Manages lifecycle   │         │  3. Provides anvil_* tools       │
-└──────────────────────┘         │  4. Enforces guardrails (hooks)  │
-                                 └──────────────────────────────────┘
-```
-
-The extension is a single Node.js ES module that communicates with the Copilot CLI over JSON-RPC via stdio. It:
-
-1. **Loads agents** from `agents/*.agent.md` at startup, parsing frontmatter for metadata
-2. **Registers them** as `customAgents` via the SDK's `joinSession()` API
-3. **Provides tools** the agents (and you) can call during sessions
-4. **Enforces guardrails** via lifecycle hooks that intercept tool calls and prompts
-
 ## Contributing
 
 1. Fork the repo
-2. Add your agent file to `agents/`
+2. Add your agent file to `agents/` and a routing skill in `skills/`
 3. If the agent needs custom tools, add them to `extension/extension.mjs` with a unique prefix
 4. Run `make lint` to verify syntax
 5. Submit a PR
