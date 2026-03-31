@@ -1,10 +1,9 @@
 {
   "name": "anvil-code",
   "description": "Evidence-first general-purpose coding agent with adversarial multi-model review and SQL-tracked verification.",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": { "name": "msucharda" },
   "license": "MIT",
   "keywords": ["code-review", "adversarial", "verification"],
-  "agents": "agents/",
-  "skills": ["skills/"]
+  "agents": "agents/"
 }

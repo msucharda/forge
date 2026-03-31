@@ -2,7 +2,6 @@
 
 INSTALL_DIR := $(HOME)/.copilot/extensions/anvil
 AGENTS_DIR := $(HOME)/.copilot/agents
-SKILLS_DIR := $(HOME)/.copilot/skills
 
 ## install — Install or update Anvil to ~/.copilot/extensions/anvil/
 install:
@@ -23,12 +22,6 @@ uninstall:
 		if [ -f "$$f" ]; then \
 			rm -f "$$f"; \
 			printf "\033[0;32m✔\033[0m Removed agent: $$(basename $$f)\n"; \
-		fi; \
-	done
-	@for d in $(SKILLS_DIR)/anvil-*; do \
-		if [ -d "$$d" ]; then \
-			rm -rf "$$d"; \
-			printf "\033[0;32m✔\033[0m Removed skill: $$(basename $$d)\n"; \
 		fi; \
 	done
 	@if [ -d "$(HOME)/.copilot/extensions/.anvil-backup" ]; then \
@@ -58,7 +51,7 @@ lint-plugins:
 				(printf "\033[0;31m✖\033[0m $$pj is not valid JSON\n" && exit 1); \
 		fi; \
 	done
-	@for f in plugins/*/skills/*/SKILL.md plugins/*/commands/*.md plugins/*/agents/*.agent.md; do \
+	@for f in plugins/*/commands/*.md plugins/*/agents/*.agent.md; do \
 		if [ -f "$$f" ]; then \
 			head -1 "$$f" | grep -q "^---$$" || \
 				(printf "\033[0;31m✖\033[0m $$f missing frontmatter\n" && exit 1); \

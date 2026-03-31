@@ -11,6 +11,7 @@ This repository is a **marketplace** — install individual agent plugins or eve
 | **anvil-core** | Shared commands (`/verify`, `/evidence`) and guardrails | Recommended for all users |
 | **anvil-code** | General-purpose coding agent with adversarial review | Install if you write application code |
 | **anvil-bicep** | Azure Bicep infrastructure agent with AVM modules | Install if you work with Azure Bicep |
+| **anvil-arc-ops** | Azure Arc operations agent with safety gates | Install if you manage Arc-enabled servers |
 
 ## Install
 
@@ -24,7 +25,6 @@ make install
 
 This installs:
 - **Agents** to `~/.copilot/agents/` (discoverable via `/agent`)
-- **Skills** to `~/.copilot/skills/` (discoverable via `/skills`)
 - **Extension** (tools & hooks) to `~/.copilot/extensions/anvil/`
 
 ### Option B: Install individual plugins via marketplace
@@ -62,17 +62,15 @@ Or manually:
 ```bash
 rm -rf ~/.copilot/extensions/anvil
 rm -f ~/.copilot/agents/anvil-*.agent.md
-rm -rf ~/.copilot/skills/anvil-code ~/.copilot/skills/anvil-bicep
 ```
 
 ## Architecture
 
-Anvil uses **two complementary systems** installed to separate Copilot CLI discovery paths:
+Anvil uses custom agents and an extension runtime installed to Copilot CLI discovery paths:
 
 | Concern | System | Install Location |
 |---------|--------|------------------|
 | **Agents** | Custom agents (`.agent.md`) | `~/.copilot/agents/` → `/agent` |
-| **Skills** | Skill system (`SKILL.md`) | `~/.copilot/skills/` → `/skills` |
 | **Runtime Tools** | Extension SDK (`extension.mjs`) | `~/.copilot/extensions/anvil/` |
 | **Commands** | Extension commands | `~/.copilot/extensions/anvil/commands/` |
 
@@ -81,18 +79,18 @@ Anvil uses **two complementary systems** installed to separate Copilot CLI disco
 │  Copilot CLI                                                      │
 │                                                                    │
 │  /agent     → discovers ~/.copilot/agents/*.agent.md              │
-│  /skills    → discovers ~/.copilot/skills/*/SKILL.md              │
 │  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs     │
 └────────┬──────────────┬──────────────┬──────────────┬─────────────┘
          │              │              │              │
    ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐
-   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │Extension │
-   │            │ │            │ │            │ │          │
-   │ /verify    │ │ agent.md   │ │ agent.md   │ │ Tools:   │
-   │ /evidence  │ │ SKILL.md   │ │ SKILL.md   │ │ git_check│
-   │ guardrails │ │            │ │            │ │ verify   │
-   └────────────┘ └────────────┘ └────────────┘ │ bicep_*  │
-                                                └──────────┘
+   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │anvil-arc-│ │Extension │
+   │            │ │            │ │            │ │  ops     │ │          │
+   │ /verify    │ │ agent.md   │ │ agent.md   │ │ agent.md │ │ Tools:   │
+   │ /evidence  │ │            │ │            │ │ ops-     │ │ git_check│
+   │ guardrails │ │            │ │            │ │ guardrail│ │ verify   │
+   └────────────┘ └────────────┘ └────────────┘ └──────────┘ │ bicep_*  │
+                                                              │ ops_*    │
+                                                              └──────────┘
 ```
 
 ## What Gets Installed
@@ -101,10 +99,8 @@ Anvil uses **two complementary systems** installed to separate Copilot CLI disco
 ~/.copilot/
 ├── agents/                          ← Copilot CLI agent discovery (/agent)
 │   ├── anvil-code.agent.md
-│   └── anvil-bicep.agent.md
-├── skills/                          ← Copilot CLI skill discovery (/skills)
-│   ├── anvil-code/SKILL.md
-│   └── anvil-bicep/SKILL.md
+│   ├── anvil-bicep.agent.md
+│   └── anvil-arc-ops.agent.md
 └── extensions/
     └── anvil/
         ├── extension.mjs            ← Runtime — tools and hooks
@@ -151,10 +147,10 @@ $EDITOR ~/.copilot/agents/anvil-code.agent.md
 
 ### Add a New Plugin
 
-Create a new directory under `plugins/` with a `plugin.json`, agent file, and skill:
+Create a new directory under `plugins/` with a `plugin.json` and agent file:
 
 ```bash
-mkdir -p plugins/anvil-terraform/agents plugins/anvil-terraform/skills/anvil-terraform
+mkdir -p plugins/anvil-terraform/agents
 ```
 
 Add the plugin to `marketplace.json` and run `make install`.
@@ -165,7 +161,7 @@ Add the plugin to `marketplace.json` and run `make install`.
 ---
 name: agent-name          # Required: unique identifier
 description: One-liner    # Required: shown in agent listings
-model: sonnet             # Optional: model for sub-agent dispatch
+                          # model: omit to inherit the caller's model
 ---
 
 # Agent Title
@@ -193,7 +189,7 @@ make install
 
 1. Fork the repo
 2. Create your plugin in `plugins/your-plugin-name/`
-3. Add a `plugin.json`, agent file, and routing skill
+3. Add a `plugin.json` and agent file
 4. Add the plugin to `.github/plugin/marketplace.json`
 5. If the agent needs custom tools, add them to `extension/extension.mjs` with a unique prefix
 6. Run `make lint` to verify syntax

@@ -10,10 +10,9 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 
-REPO_URL="${ANVIL_REPO_URL:-https://github.com/YOUR_USERNAME/anvil.git}"
+REPO_URL="${ANVIL_REPO_URL:-https://github.com/msucharda/anvil.git}"
 INSTALL_DIR="${HOME}/.copilot/extensions/anvil"
 AGENTS_DIR="${HOME}/.copilot/agents"
-SKILLS_DIR="${HOME}/.copilot/skills"
 BACKUP_DIR="${HOME}/.copilot/extensions/.anvil-backup"
 TMP_DIR=""
 
@@ -153,7 +152,7 @@ fi
 # Install
 # ---------------------------------------------------------------------------
 
-mkdir -p "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins" "${AGENTS_DIR}" "${SKILLS_DIR}"
+mkdir -p "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins" "${AGENTS_DIR}"
 
 # Copy extension (tools & hooks)
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
@@ -176,14 +175,6 @@ for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
 done
 agent_count=$(ls -1 "${AGENTS_DIR}/"anvil-*.agent.md 2>/dev/null | wc -l)
 ok "Installed ${agent_count} agent(s) to ${AGENTS_DIR}/"
-
-# Install skills to ~/.copilot/skills/ (Copilot CLI discovery path)
-for plugin_skills in "${SOURCE_DIR}/plugins/"*/skills; do
-    [ -d "${plugin_skills}" ] || continue
-    cp -r "${plugin_skills}/"* "${SKILLS_DIR}/" 2>/dev/null || true
-done
-skill_count=$(find "${SKILLS_DIR}" -maxdepth 2 -name "SKILL.md" -path "*/anvil-*/*" 2>/dev/null | wc -l)
-ok "Installed ${skill_count} skill(s) to ${SKILLS_DIR}/"
 
 # Assemble commands from all plugins into extension commands/
 rm -rf "${INSTALL_DIR}/commands"
@@ -233,7 +224,6 @@ fi
 printf "\n"
 printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
 printf "  ${BOLD}Agents${NC}:     ${AGENTS_DIR}/\n"
-printf "  ${BOLD}Skills${NC}:     ${SKILLS_DIR}/\n"
 printf "  ${BOLD}Commands${NC}:   ${INSTALL_DIR}/commands/\n"
 printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
 printf "\n"

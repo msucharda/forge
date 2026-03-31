@@ -19,9 +19,17 @@ fi
 
 COMMAND="${TOOL_ARGS}"
 
-# Block recursive delete from root
-if echo "$COMMAND" | grep -qE '\brm\s+.*-[^ ]*r[^ ]*f|\brm\s+.*-[^ ]*f[^ ]*r|\brm\s+--recursive\b.*--force\b|\brm\s+--force\b.*--recursive\b'; then
-    if echo "$COMMAND" | grep -qE '\s/(\s|$|"|'"'"')'; then
+# Block recursive delete from root (catches -rf, -r -f, --recursive --force, and /* glob)
+HAS_RECURSIVE=false
+HAS_FORCE=false
+if echo "$COMMAND" | grep -qE '\brm\b.*(-[^ ]*r|-R|--recursive)'; then
+    HAS_RECURSIVE=true
+fi
+if echo "$COMMAND" | grep -qE '\brm\b.*(-[^ ]*f|--force)'; then
+    HAS_FORCE=true
+fi
+if [ "$HAS_RECURSIVE" = true ] && [ "$HAS_FORCE" = true ]; then
+    if echo "$COMMAND" | grep -qE '(\s|"|'"'"')/(\s|$|"|'"'"'|\*)'; then
         echo "🔨 Anvil: recursive delete from root is blocked." >&2
         exit 1
     fi

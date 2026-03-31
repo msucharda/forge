@@ -1,10 +1,9 @@
 {
   "name": "anvil-bicep",
   "description": "Evidence-first Azure Bicep infrastructure agent with AVM modules, Bicep linting, and ARM deployment validation.",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": { "name": "msucharda" },
   "license": "MIT",
   "keywords": ["bicep", "azure", "infrastructure", "avm"],
-  "agents": "agents/",
-  "skills": ["skills/"]
+  "agents": "agents/"
 }
