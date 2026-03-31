@@ -54,7 +54,7 @@ If unsure, treat as Medium.
 
 **Risk classification per file (infrastructure-specific):**
 - 🟢 New parameter files (`.bicepparam`), documentation, tags, comments, PSRule config, `bicepconfig.json` rule additions, `README.md`
-- 🟡 Adding new AVM modules to `main.bicep`, modifying existing module parameters, changing subnet CIDRs, NSG rules, SKU sizing, adding outputs, Makefile changes, workflow parameter changes
+- 🟡 Adding new AVM modules to `main.bicep`, modifying existing module parameters, changing subnet CIDRs, NSG rules, SKU sizing, adding outputs, workflow parameter changes
 - 🔴 RBAC role assignments, network security rules allowing inbound traffic, private endpoint DNS configuration, subscription-scope changes (management group association, resource providers), Key Vault access policy changes, AKS authentication config, PostgreSQL authentication changes, changes to `targetScope`, federated identity credential changes, PIM script modifications
 
 ## Verification Ledger
@@ -194,8 +194,8 @@ Before changing any code, capture current system state:
 
 1. Run `az bicep lint --file infra/main.bicep` — INSERT result
 2. Run `az bicep build --file infra/main.bicep --stdout > /dev/null` — INSERT result
-3. Run `make psrule` or PSRule directly if available — INSERT result
-4. If Azure CLI is authenticated, run `ENV={env} make validate` — INSERT result
+3. Run PSRule if available — discover via `Makefile` (`make psrule`) or invoke directly: `pwsh -Command "Invoke-PSRule -InputPath infra/ -Module PSRule.Rules.Azure -Outcome Fail,Error"`. If PSRule is not installed, INSERT `check_name = 'psrule-unavailable'`, `passed = 1`, `output_snippet = 'PSRule not configured in this repo'`.
+4. If Azure CLI is authenticated (`az account show` succeeds), run ARM validation: `az deployment sub validate --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam` — INSERT result.
 
 If baseline is already broken, note it but proceed — you're not responsible for pre-existing failures, but you ARE responsible for not making them worse.
 
@@ -230,16 +230,17 @@ Run every applicable tier. Do not stop at the first one. Defense in depth.
 1. **Bicep lint**: `az bicep lint --file infra/main.bicep` — Checks against `bicepconfig.json` rules. INSERT exit code.
 2. **Bicep build**: `az bicep build --file infra/main.bicep --stdout > /dev/null` — Compiles to ARM template, catches syntax errors, type mismatches, and missing parameters. INSERT exit code.
 
-**Tier 2 — Run if tooling exists (discover from Makefile and project config):**
+**Tier 2 — Run if tooling exists (discover dynamically — check Makefile, bicepconfig.json, tests/ directory):**
 
-3. **PSRule for Azure**: `make psrule` (or invoke PSRule directly). Validates against Azure Well-Architected Framework rules. INSERT exit code.
-4. **Full local check suite**: `make test` — Typically runs lint + build + PSRule together. INSERT exit code.
-5. **Parameter file consistency**: Verify that every parameter in `main.bicep` that lacks a default value has a corresponding entry in ALL `.bicepparam` files. This is a manual check — grep for `param` declarations and cross-reference.
+3. **PSRule for Azure**: Discover via Makefile (`make psrule`) or invoke directly: `pwsh -Command "Invoke-PSRule -InputPath infra/ -Module PSRule.Rules.Azure -Outcome Fail,Error"`. Validates against Azure Well-Architected Framework rules. INSERT exit code. If PSRule is not installed in this repo, INSERT `check_name = 'psrule-unavailable'`, `passed = 1`, `output_snippet` explaining it's not configured.
+4. **Parameter file consistency**: Verify that every parameter in `main.bicep` that lacks a default value has a corresponding entry in ALL `.bicepparam` files. Use the `anvil_bicep_param_check` tool or grep for `param` declarations and cross-reference.
 
 **Tier 3 — Requires Azure auth (validate against real subscription):**
 
-6. **ARM validation**: `ENV={env} make validate` — Runs `az deployment sub validate` (or `az deployment mg validate` for management-group-scoped templates). Type-checks parameters against Azure Resource Manager. INSERT exit code.
-7. **What-if preview**: `ENV={env} make what-if` — Dry-run against live Azure state. Shows creates, deletes, and modifications. INSERT exit code and key output (especially any unexpected DELETEs or REPLACES).
+5. **ARM validation**: `az deployment sub validate --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam` (or `az deployment mg validate` for management-group-scoped templates). Type-checks parameters against Azure Resource Manager. INSERT exit code.
+6. **What-if preview**: `az deployment sub what-if --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam` — Dry-run against live Azure state. Shows creates, deletes, and modifications. INSERT exit code and key output (especially any unexpected DELETEs or REPLACES).
+
+If a `Makefile` exists with `validate` or `what-if` targets, prefer those (e.g., `ENV={env} make validate`) — they may include additional flags or scoping. Otherwise, use the direct `az` commands above.
 
 **Tier 3 handling**: If Azure CLI is not authenticated (`az account show` fails), INSERT a check with `check_name = 'tier3-no-azure-auth'`, `passed = 1`, and `output_snippet = 'No Azure CLI session. Tiers 1-2 provide lint + build + WAF compliance. ARM validation requires az login.'`. This is acceptable — Tiers 1 and 2 already provide meaningful static verification for Bicep. Silently skipping is not acceptable.
 
@@ -304,8 +305,8 @@ Before presenting, check infrastructure-specific readiness:
 - **Network isolation**: Is the resource accessible only via private endpoint or VNet integration? Check for `publicNetworkAccess`, `networkAcls`, or equivalent.
 - **Secrets**: Are any passwords, connection strings, or keys hardcoded in `.bicep` or `.bicepparam` files? They should be `@secure()` parameters set via pipeline secrets.
 - **Tags**: Do all new resources inherit the `defaultTags` variable (or equivalent)?
-- **PSRule compliance**: Does `make psrule` pass with zero failures?
-- **Blast radius** (if Tier 3 ran): Does `make what-if` show any unexpected resource deletions or replacements?
+- **PSRule compliance**: Does PSRule pass with zero failures? Run via Makefile (`make psrule`) or directly: `pwsh -Command "Invoke-PSRule -InputPath infra/ -Module PSRule.Rules.Azure -Outcome Fail,Error"`.
+- **Blast radius** (if Tier 3 ran): Does the what-if output show any unexpected resource deletions or replacements?
 
 INSERT each check into `anvil_checks` with `phase = 'after'`, `check_name = 'readiness-{type}'` (e.g., `readiness-diagnostics`, `readiness-network-isolation`, `readiness-secrets`), and `passed = 0/1`.
 
@@ -357,7 +358,7 @@ Present:
 **Confidence levels (use these definitions, not vibes):**
 - **High**: All tiers passed (including PSRule), no regressions, reviewers found zero issues or only issues you fixed. All `.bicepparam` files updated. You'd merge this without reading the diff.
 - **Medium**: Lint + build passed but: PSRule had warnings (not failures), no Azure validation ran (Tier 3 unavailable), a reviewer raised a concern you addressed but aren't certain about, or blast radius you couldn't fully verify. A human should skim the diff.
-- **Low**: A check failed you couldn't fix, you made assumptions about network ranges or DNS zones you couldn't verify, or a reviewer raised a security concern you can't disprove. **If Low, you MUST state what would raise it** (e.g., "Running `ENV=dev make validate` with Azure auth would confirm the subnet range is available").
+- **Low**: A check failed you couldn't fix, you made assumptions about network ranges or DNS zones you couldn't verify, or a reviewer raised a security concern you can't disprove. **If Low, you MUST state what would raise it** (e.g., "Running `az deployment sub validate` with Azure auth would confirm the subnet range is available").
 
 ### 6. Learn (after verification, before presenting)
 
@@ -401,18 +402,24 @@ For Small tasks: `ask_user` with choices "Commit this change" / "I'll commit lat
 Discover commands in this order — don't guess:
 
 1. **Read `.github/copilot-instructions.md`** — contains repo-specific commands, AVM modules, naming conventions, and architecture context. This is the authoritative source.
-2. **Read `Makefile`** — all repos use consistent targets:
-   - `make lint` — `az bicep lint`
-   - `make build` — `az bicep build` (syntax check)
-   - `make test` — lint + build + PSRule
-   - `make psrule` — Azure WAF compliance
-   - `ENV={env} make validate` — ARM validation against Azure
-   - `ENV={env} make what-if` — Dry-run preview
-   - `ENV={env} make deploy` — Actual deployment
-   - For subscription vending: `SUB={sub} DEPLOYMENT_MG={mg} make {target}`
-3. **Check `bicepconfig.json`** — confirms Bicep ecosystem and linter rule severity.
-4. **Check `tests/psrule/` directory** — confirms PSRule is configured.
-5. **Note the `ENV` variable pattern**: `ENV=dev make {target}`. Default is usually `dev`.
+2. **Check for a `Makefile`** — if present, read its targets. Common patterns:
+   - `make lint` → `az bicep lint`
+   - `make build` → `az bicep build`
+   - `make psrule` → PSRule WAF compliance
+   - `make test` → lint + build + PSRule
+   - `ENV={env} make validate` → ARM validation
+   - `ENV={env} make what-if` → Dry-run preview
+   - `ENV={env} make deploy` → Deployment
+   - If a Makefile exists with these targets, prefer them — they may include repo-specific flags.
+3. **If no Makefile exists**, use direct `az` CLI commands as the universal baseline:
+   - **Lint**: `az bicep lint --file infra/main.bicep`
+   - **Build**: `az bicep build --file infra/main.bicep --stdout > /dev/null`
+   - **PSRule**: `pwsh -Command "Invoke-PSRule -InputPath infra/ -Module PSRule.Rules.Azure -Outcome Fail,Error"` (if PSRule is installed)
+   - **ARM validation**: `az deployment sub validate --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam`
+   - **What-if**: `az deployment sub what-if --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam`
+   - **Deploy**: `az deployment sub create --location {location} --template-file infra/main.bicep --parameters infra/main.{env}.bicepparam`
+4. **Check `bicepconfig.json`** — confirms Bicep ecosystem and linter rule severity.
+5. **Check `tests/psrule/` directory** — confirms PSRule is configured.
 6. **`ask_user` only** after all above fail.
 
 Once confirmed working, update the project instruction file (`.github/copilot-instructions.md` or `AGENTS.md`) with the discovered command so future sessions inherit it.
@@ -454,8 +461,10 @@ bash: az account show --query name -o tsv 2>/dev/null || echo "NOT_LOGGED_IN"
 # ❌ BAD: Runs deploy which might prompt for confirmation
 bash: az deployment sub create ... (might prompt)
 
-# ✅ GOOD: Use make targets which handle this, or add --no-wait / --confirm-with-what-if
+# ✅ GOOD: Use Makefile target if available, or add --confirm-with-what-if
 bash: ENV=dev make deploy
+# Or directly:
+bash: az deployment sub create --location swedencentral --template-file infra/main.bicep --parameters infra/main.dev.bicepparam --confirm-with-what-if
 ```
 
 ## Rules
