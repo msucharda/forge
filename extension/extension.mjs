@@ -1,5 +1,5 @@
 // Anvil — Evidence-first coding agents for GitHub Copilot CLI
-// https://github.com/YOUR_USERNAME/anvil
+// https://github.com/msucharda/anvil
 
 import { execFile } from "node:child_process";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { joinSession } from "@github/copilot-sdk/extension";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = join(__dirname, "agents");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,26 +30,29 @@ function sqlEscape(s) {
     return String(s).replace(/'/g, "''");
 }
 
-const DANGEROUS_CMD_RE = /\brm\s+.*-[^\s]*r[^\s]*f|rm\s+.*-[^\s]*f[^\s]*r|\brm\s+--recursive\b.*--force\b|\brm\s+--force\b.*--recursive\b/i;
-
 function isDangerousCommand(cmd) {
-    if (DANGEROUS_CMD_RE.test(cmd) && /\s\/(?:\s|$|"|')/.test(cmd)) return "recursive delete from root";
+    // Check for recursive + force rm targeting root
+    const hasRecursive = /\brm\b.*(?:-[^\s-]*r|-R|--recursive)/i.test(cmd);
+    const hasForce = /\brm\b.*(?:-[^\s-]*f|--force)/i.test(cmd);
+    if (hasRecursive && hasForce && /(?:\s|"|')\/(?:\s|$|"|'|\*)/.test(cmd)) return "recursive delete from root";
     return null;
 }
 
-// ---------------------------------------------------------------------------
-// Agent discovery — reads agents/*.agent.md names for logging
-// (Agent registration is handled by plugin.json, not the extension SDK)
-// ---------------------------------------------------------------------------
-
-function discoverAgentNames() {
-    if (!existsSync(AGENTS_DIR)) return [];
-    return readdirSync(AGENTS_DIR)
-        .filter((f) => f.endsWith(".agent.md"))
-        .map((f) => f.replace(".agent.md", ""));
+// Centralized command validation — called before every internal shell() call and onPreToolUse
+function validateCommand(cmd) {
+    const danger = isDangerousCommand(cmd);
+    if (danger) return { reason: danger, decision: "deny" };
+    // Arc destructive operations (defense-in-depth — shell hooks are primary)
+    if (/az\s+connectedmachine\s+delete\b/.test(cmd)) return { reason: "connectedmachine delete removes Azure management plane access", decision: "ask" };
+    if (/connectedmachine\s+extension\s+delete\b/.test(cmd)) return { reason: "extension delete removes monitoring/security agents", decision: "ask" };
+    if (/connectedmachine\s+run-command\s+create\b/.test(cmd) && /--run-as-user\b/.test(cmd)) return { reason: "run-command with --run-as-user is blocked", decision: "deny" };
+    if (/connectedmachine\s+run-command\s+create\b/.test(cmd) && /--async-execution\b/.test(cmd)) return { reason: "--async-execution is blocked", decision: "deny" };
+    if (/connectedmachine\s+run-command\s+create\b/.test(cmd)) return { reason: "run-command executes code on remote servers", decision: "ask" };
+    if (/connectedmachine\s+private-endpoint-connection\s+delete\b/.test(cmd)) return { reason: "private endpoint deletion is blocked", decision: "deny" };
+    // Git push to main/master
+    if (/git\s+push\s.*\b(main|master)\b/i.test(cmd)) return { reason: "push to main/master — use a feature branch", decision: "ask" };
+    return null;
 }
-
-const agentNames = discoverAgentNames();
 
 // ---------------------------------------------------------------------------
 // Session
@@ -59,12 +61,9 @@ const agentNames = discoverAgentNames();
 const session = await joinSession({
     hooks: {
         onSessionStart: async (input) => {
-            const names = agentNames.length > 0
-                ? agentNames.map((n) => `\`${n}\``).join(", ")
-                : "(none found)";
             return {
                 additionalContext: [
-                    `🔨 Anvil extension active. Loaded agents: ${names}.`,
+                    "🔨 Anvil extension active.",
                     "The anvil_checks SQL table schema is available for verification tracking.",
                     "Use anvil_git_check before starting Medium/Large tasks.",
                 ].join("\n"),
@@ -80,6 +79,9 @@ const session = await joinSession({
                     "- anvil_bicep_lint: Bicep lint with structured output",
                     "- anvil_bicep_build: Bicep build (compile to ARM) with structured output",
                     "- anvil_bicep_param_check: cross-reference params vs .bicepparam files",
+                    "- anvil_ops_check: pre-flight Azure auth, subscription, and Arc CLI check",
+                    "- anvil_ops_inventory: list Arc-enabled servers with filtering",
+                    "- anvil_ops_preview: dry-run preview for Arc operations",
                 ].join("\n"),
             };
         },
@@ -87,18 +89,11 @@ const session = await joinSession({
         onPreToolUse: async (input) => {
             if (input.toolName === "bash") {
                 const cmd = String(input.toolArgs?.command || "");
-                const danger = isDangerousCommand(cmd);
-                if (danger) {
+                const blocked = validateCommand(cmd);
+                if (blocked) {
                     return {
-                        permissionDecision: "deny",
-                        permissionDecisionReason: `🔨 Anvil: ${danger} is blocked.`,
-                    };
-                }
-                // Warn on direct push to main/master
-                if (/git\s+push\s.*\b(main|master)\b/i.test(cmd) || /git\s+push\s+origin\s+(main|master)\b/i.test(cmd)) {
-                    return {
-                        permissionDecision: "ask",
-                        permissionDecisionReason: "🔨 Anvil: you're pushing directly to main/master. Are you sure?",
+                        permissionDecision: blocked.decision,
+                        permissionDecisionReason: `🔨 Anvil: ${blocked.reason}.`,
                     };
                 }
             }
@@ -110,6 +105,14 @@ const session = await joinSession({
                 if (path.endsWith(".bicep") || path.endsWith(".bicepparam")) {
                     return {
                         additionalContext: "Bicep file modified. Run anvil_bicep_lint and anvil_bicep_build to verify before presenting.",
+                    };
+                }
+            }
+            if (input.toolName === "bash" && input.toolResult?.resultType !== "failure") {
+                const cmd = String(input.toolArgs?.command || "");
+                if (/az\s+connectedmachine\s+(extension\s+(create|delete|update)|upgrade-extension|run-command\s+create|install-patches)/.test(cmd)) {
+                    return {
+                        additionalContext: "Arc operation executed. Verify the result with anvil_ops_inventory or az connectedmachine show/extension show.",
                     };
                 }
             }
@@ -176,11 +179,11 @@ const session = await joinSession({
                 required: ["command", "check_name", "task_id", "phase"],
             },
             handler: async (args) => {
-                // Apply same guardrails as onPreToolUse
-                const danger = isDangerousCommand(args.command);
-                if (danger) {
+                // Centralized guardrails — covers rm, Arc destructive ops, git push
+                const blocked = validateCommand(args.command);
+                if (blocked) {
                     return JSON.stringify({
-                        error: `🔨 Anvil blocked: ${danger} is not allowed via anvil_verify.`,
+                        error: `🔨 Anvil blocked: ${blocked.reason} is not allowed via anvil_verify.`,
                         passed: 0,
                     }, null, 2);
                 }
@@ -375,12 +378,175 @@ const session = await joinSession({
                 }, null, 2);
             },
         },
+
+        // ---------------------------------------------------------------
+        // Ops-specific tools (Azure Arc)
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_ops_check",
+            description: "Pre-flight check for Azure Arc operations: verify Azure auth, active subscription, and connectedmachine CLI extension. Run before starting any Arc operations task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug (e.g., upgrade-mde-prod)" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const [account, ext] = await Promise.all([
+                    shell("az", ["account", "show", "--query", "{name:name, id:id, tenantId:tenantId}", "-o", "json"]),
+                    shell("az", ["extension", "show", "--name", "connectedmachine", "--query", "version", "-o", "tsv"]),
+                ]);
+
+                let subscription = null;
+                if (account.ok) {
+                    try { subscription = JSON.parse(account.stdout); }
+                    catch { subscription = { error: "Failed to parse az output", raw: (account.stdout || "").slice(0, 200) }; }
+                }
+
+                const report = {
+                    authenticated: account.ok,
+                    subscription,
+                    connectedmachine_cli: ext.ok ? ext.stdout : "not installed",
+                    task_id: args.task_id,
+                };
+
+                const warnings = [];
+                if (!account.ok) warnings.push("❌ Not authenticated — run 'az login' first");
+                if (!ext.ok) warnings.push("⚠️ connectedmachine CLI extension not installed — run 'az extension add --name connectedmachine'");
+                if (warnings.length === 0) warnings.push("✅ Azure auth and Arc CLI ready");
+
+                return JSON.stringify({ ...report, warnings }, null, 2);
+            },
+        },
+        {
+            name: "anvil_ops_inventory",
+            description: "List Azure Arc-enabled servers with optional filtering by resource group and status. Returns server name, status, OS type, and last status change.",
+            parameters: {
+                type: "object",
+                properties: {
+                    resource_group: { type: "string", description: "Azure resource group name (optional — lists all if omitted)" },
+                    status_filter: { type: "string", enum: ["Connected", "Disconnected", "Error", "all"], description: "Filter by connection status (default: all)" },
+                },
+            },
+            handler: async (args) => {
+                const azArgs = ["connectedmachine", "list"];
+                if (args.resource_group) {
+                    azArgs.push("--resource-group", args.resource_group);
+                }
+                azArgs.push("--query", "[].{name:name, status:status, osType:osType, lastStatusChange:lastStatusChange, resourceGroup:resourceGroup}");
+                azArgs.push("-o", "json");
+
+                const result = await shell("az", azArgs);
+                if (!result.ok) {
+                    return JSON.stringify({ error: result.stderr || "Failed to list servers", exit_code: result.code });
+                }
+
+                let servers;
+                try { servers = JSON.parse(result.stdout || "[]"); }
+                catch { return JSON.stringify({ error: "Failed to parse az output", raw: (result.stdout || "").slice(0, 500) }); }
+                if (args.status_filter && args.status_filter !== "all") {
+                    servers = servers.filter(s => s.status === args.status_filter);
+                }
+
+                return JSON.stringify({
+                    total: servers.length,
+                    filter: args.status_filter || "all",
+                    resource_group: args.resource_group || "(all)",
+                    servers,
+                }, null, 2);
+            },
+        },
+        {
+            name: "anvil_ops_preview",
+            description: "Dry-run preview for Azure Arc operations. Shows what an operation would do without executing it. Wraps az commands with --what-if or equivalent preview flags.",
+            parameters: {
+                type: "object",
+                properties: {
+                    command: { type: "string", description: "The az connectedmachine command to preview (will be modified to add preview/what-if flags)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["command", "task_id"],
+            },
+            handler: async (args) => {
+                const cmd = args.command;
+
+                // Validate: must be an az connectedmachine command
+                if (!/^\s*az\s+connectedmachine\b/.test(cmd)) {
+                    return JSON.stringify({ error: "anvil_ops_preview only accepts 'az connectedmachine' commands." });
+                }
+
+                // Centralized guardrails
+                const blocked = validateCommand(cmd);
+                if (blocked) {
+                    return JSON.stringify({ error: `🔨 Anvil blocked: ${blocked.reason}`, passed: 0 });
+                }
+
+                // Parse command into args array (split on whitespace, respecting quotes and --flag=value)
+                function parseArgs(cmdStr) {
+                    const args = [];
+                    const re = /(?:'([^']*)'|"([^"]*)"|(\S+))/g;
+                    let m;
+                    while ((m = re.exec(cmdStr)) !== null) {
+                        const token = m[1] ?? m[2] ?? m[3];
+                        // Handle --flag="value with spaces" by stripping surrounding quotes from =value
+                        const eqMatch = token.match(/^(--\w[\w-]*)=(?:"([^"]*)"|'([^']*)'|(.*))$/);
+                        if (eqMatch) {
+                            args.push(`${eqMatch[1]}=${eqMatch[2] ?? eqMatch[3] ?? eqMatch[4]}`);
+                        } else {
+                            args.push(token);
+                        }
+                    }
+                    // Strip leading "az" — execFile will call az directly
+                    if (args[0] === "az") args.shift();
+                    return args;
+                }
+
+                // For patch operations, redirect to assess-patches
+                if (/install-patches/.test(cmd)) {
+                    const assessCmd = cmd.replace(/install-patches/, "assess-patches").replace(/--reboot-setting\s+\S+/, "");
+                    const azArgs = parseArgs(assessCmd);
+                    const result = await shell("az", azArgs);
+                    const output = (result.stdout || result.stderr || "").slice(0, 1000);
+                    return JSON.stringify({
+                        preview_type: "assess-patches",
+                        original_command: cmd,
+                        preview_command: assessCmd,
+                        exit_code: result.code,
+                        output,
+                        sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'ops-preview', 'anvil_ops_preview', '${sqlEscape(assessCmd)}', ${result.code}, '${sqlEscape(output)}', ${result.ok ? 1 : 0});`,
+                    }, null, 2);
+                }
+
+                // For extension operations, show current state as preview
+                if (/extension\s+(create|delete|update)/.test(cmd)) {
+                    const showCmd = cmd
+                        .replace(/extension\s+(create|delete|update)/, "extension show")
+                        .replace(/--publisher(?:=|\s+)(?:'[^']*'|"[^"]*"|\S+)/g, "")
+                        .replace(/--type(?:=|\s+)(?:'[^']*'|"[^"]*"|\S+)/g, "")
+                        .replace(/--settings(?:=|\s+)(?:'[^']*'|"[^"]*"|\S+)/g, "");
+                    const azArgs = parseArgs(showCmd);
+                    const result = await shell("az", azArgs);
+                    const output = (result.stdout || result.stderr || "").slice(0, 1000);
+                    return JSON.stringify({
+                        preview_type: "current-state",
+                        original_command: cmd,
+                        preview_command: showCmd,
+                        exit_code: result.code,
+                        output,
+                        note: "Showing current extension state. The original command will modify this.",
+                    }, null, 2);
+                }
+
+                // Default: show target resource current state
+                return JSON.stringify({
+                    preview_type: "unsupported",
+                    note: "No preview available for this command. Review the command manually before execution.",
+                    original_command: cmd,
+                }, null, 2);
+            },
+        },
     ],
 });
 
-// Log loaded agents
-if (agentNames.length > 0) {
-    await session.log(`🔨 Anvil loaded: ${agentNames.join(", ")}`);
-} else {
-    await session.log("🔨 Anvil extension loaded (no agent files found in agents/)", { level: "warning" });
-}
+await session.log("🔨 Anvil extension loaded — tools and guardrails active");

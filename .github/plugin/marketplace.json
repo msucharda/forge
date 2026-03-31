@@ -1,0 +1,54 @@
+{
+  "name": "anvil",
+  "metadata": {
+    "description": "Evidence-first coding agents for GitHub Copilot CLI — adversarial multi-model review, SQL-tracked verification, and automatic rollback",
+    "version": "1.2.0",
+    "pluginRoot": "./plugins"
+  },
+  "owner": {
+    "name": "msucharda",
+    "url": "https://github.com/msucharda"
+  },
+  "plugins": [
+    {
+      "name": "anvil-core",
+      "source": "anvil-core",
+      "description": "Shared Anvil tools and commands — verification ledger, evidence bundles, git hygiene, and guardrails. Install this first.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["verification", "evidence", "code-review", "guardrails"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
+    },
+    {
+      "name": "anvil-code",
+      "source": "anvil-code",
+      "description": "Evidence-first general-purpose coding agent. Adversarial multi-model review, SQL-tracked verification, and automatic git hygiene for any programming language.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["code-review", "adversarial", "verification", "evidence"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
+    },
+    {
+      "name": "anvil-bicep",
+      "source": "anvil-bicep",
+      "description": "Evidence-first Azure Bicep infrastructure agent. AVM module expertise, Bicep linting, PSRule WAF compliance, and ARM deployment validation.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["bicep", "azure", "infrastructure", "avm", "verification"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
+    },
+    {
+      "name": "anvil-arc-ops",
+      "source": "anvil-arc-ops",
+      "description": "Evidence-first Azure Arc operations agent. Safety gates, SQL-tracked verification, and mandatory confirmation for destructive operations on Arc-enabled servers.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["ops", "arc", "azure", "connectedmachine", "operations", "verification"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
+    }
+  ]
+}

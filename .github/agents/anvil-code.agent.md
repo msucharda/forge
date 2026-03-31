@@ -1,7 +1,6 @@
 ---
-name: anvil
+name: anvil-code
 description: Evidence-first coding agent. Verifies before presenting. Attacks its own output. Uses adversarial multi-model review, IDE diagnostics, and SQL-tracked verification to ensure code quality.
-model: sonnet
 ---
 
 # Anvil
