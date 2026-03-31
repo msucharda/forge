@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "hooks/guardrails.sh",
+        "description": "Anvil guardrails: block dangerous commands, warn on push to main/master",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

@@ -54,7 +54,7 @@ file_hash() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_DIR=""
 
-if [ -f "${SCRIPT_DIR}/extension/extension.mjs" ] && [ -d "${SCRIPT_DIR}/agents" ]; then
+if [ -f "${SCRIPT_DIR}/extension/extension.mjs" ] && [ -d "${SCRIPT_DIR}/plugins" ]; then
     # Running from a local clone
     SOURCE_DIR="${SCRIPT_DIR}"
     info "Installing from local clone: ${SOURCE_DIR}"
@@ -70,10 +70,8 @@ fi
 
 # Verify source has required files
 [ -f "${SOURCE_DIR}/extension/extension.mjs" ] || die "extension/extension.mjs not found in source"
-[ -d "${SOURCE_DIR}/agents" ] || die "agents/ directory not found in source"
+[ -d "${SOURCE_DIR}/plugins" ] || die "plugins/ directory not found in source"
 [ -f "${SOURCE_DIR}/plugin.json" ] || die "plugin.json not found in source"
-[ -d "${SOURCE_DIR}/skills" ] || die "skills/ directory not found in source"
-[ -d "${SOURCE_DIR}/commands" ] || die "commands/ directory not found in source"
 [ -f "${SOURCE_DIR}/version.txt" ] || die "version.txt not found in source"
 
 NEW_VERSION="$(cat "${SOURCE_DIR}/version.txt" | tr -d '[:space:]')"
@@ -112,24 +110,29 @@ if [ "${IS_UPDATE}" = true ] && [ -d "${INSTALL_DIR}/agents" ]; then
 
     for agent_file in "${INSTALL_DIR}/agents/"*.agent.md; do
         [ -f "${agent_file}" ] || continue
-        basename="$(basename "${agent_file}")"
-        source_file="${SOURCE_DIR}/agents/${basename}"
+        base="$(basename "${agent_file}")"
 
-        if [ -f "${source_file}" ]; then
-            # Compare checksums — if user modified the file, back it up
+        # Find matching source file in plugins/*/agents/
+        source_file=""
+        for plugin_dir in "${SOURCE_DIR}/plugins/"*/agents; do
+            [ -d "${plugin_dir}" ] || continue
+            if [ -f "${plugin_dir}/${base}" ]; then
+                source_file="${plugin_dir}/${base}"
+                break
+            fi
+        done
+
+        if [ -n "${source_file}" ]; then
             installed_hash="$(file_hash "${agent_file}")"
             source_hash="$(file_hash "${source_file}")"
-
             if [ "${installed_hash}" != "${source_hash}" ]; then
-                # Check if the installed file matches the OLD source (not modified by user)
-                # If we can't tell, assume user modified it and back up
-                cp "${agent_file}" "${BACKUP_DIR}/${basename}.bak"
-                warn "Backed up modified agent: ${basename} → ${BACKUP_DIR}/${basename}.bak"
+                cp "${agent_file}" "${BACKUP_DIR}/${base}.bak"
+                warn "Backed up modified agent: ${base} → ${BACKUP_DIR}/${base}.bak"
             fi
         else
-            # Agent file exists locally but not in source — user-created agent
-            cp "${agent_file}" "${BACKUP_DIR}/${basename}.bak"
-            warn "Backed up custom agent: ${basename} → ${BACKUP_DIR}/${basename}.bak"
+            # User-created agent — back it up
+            cp "${agent_file}" "${BACKUP_DIR}/${base}.bak"
+            warn "Backed up custom agent: ${base} → ${BACKUP_DIR}/${base}.bak"
         fi
     done
 fi
@@ -138,42 +141,67 @@ fi
 # Install
 # ---------------------------------------------------------------------------
 
-mkdir -p "${INSTALL_DIR}/agents"
+mkdir -p "${INSTALL_DIR}/agents" "${INSTALL_DIR}/skills" "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins"
 
 # Copy extension
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
 ok "Installed extension.mjs"
 
-# Copy plugin manifest
+# Copy plugin manifest (root-level for extension compatibility)
 cp "${SOURCE_DIR}/plugin.json" "${INSTALL_DIR}/plugin.json"
 ok "Installed plugin.json"
 
-# Copy skills
-rm -rf "${INSTALL_DIR}/skills"
-cp -r "${SOURCE_DIR}/skills" "${INSTALL_DIR}/skills"
-skill_count=$(find "${INSTALL_DIR}/skills" -name "SKILL.md" 2>/dev/null | wc -l)
-ok "Installed ${skill_count} skill(s)"
+# Copy plugins directory (marketplace structure)
+rm -rf "${INSTALL_DIR}/plugins"
+cp -r "${SOURCE_DIR}/plugins" "${INSTALL_DIR}/plugins"
+plugin_count=$(ls -d "${INSTALL_DIR}/plugins/"*/ 2>/dev/null | wc -l)
+ok "Installed ${plugin_count} plugin(s)"
 
-# Copy commands
-rm -rf "${INSTALL_DIR}/commands"
-cp -r "${SOURCE_DIR}/commands" "${INSTALL_DIR}/commands"
-cmd_count=$(ls -1 "${INSTALL_DIR}/commands/"*.md 2>/dev/null | wc -l)
-ok "Installed ${cmd_count} command(s)"
-
-# Copy agent files
-cp "${SOURCE_DIR}/agents/"*.agent.md "${INSTALL_DIR}/agents/" 2>/dev/null || true
+# Assemble agents from all plugins into agents/ (for extension compatibility)
+rm -f "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null || true
+for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
+    [ -d "${plugin_agents}" ] || continue
+    cp "${plugin_agents}/"*.agent.md "${INSTALL_DIR}/agents/" 2>/dev/null || true
+done
 agent_count=$(ls -1 "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null | wc -l)
-ok "Installed ${agent_count} agent file(s)"
+ok "Assembled ${agent_count} agent(s) from plugins"
+
+# Assemble skills from all plugins into skills/
+rm -rf "${INSTALL_DIR}/skills"
+mkdir -p "${INSTALL_DIR}/skills"
+for plugin_skills in "${SOURCE_DIR}/plugins/"*/skills; do
+    [ -d "${plugin_skills}" ] || continue
+    cp -r "${plugin_skills}/"* "${INSTALL_DIR}/skills/" 2>/dev/null || true
+done
+skill_count=$(find "${INSTALL_DIR}/skills" -name "SKILL.md" 2>/dev/null | wc -l)
+ok "Assembled ${skill_count} skill(s) from plugins"
+
+# Assemble commands from all plugins into commands/
+rm -rf "${INSTALL_DIR}/commands"
+mkdir -p "${INSTALL_DIR}/commands"
+for plugin_commands in "${SOURCE_DIR}/plugins/"*/commands; do
+    [ -d "${plugin_commands}" ] || continue
+    cp "${plugin_commands}/"*.md "${INSTALL_DIR}/commands/" 2>/dev/null || true
+done
+cmd_count=$(ls -1 "${INSTALL_DIR}/commands/"*.md 2>/dev/null | wc -l)
+ok "Assembled ${cmd_count} command(s) from plugins"
 
 # Restore user-created agents (agents that exist in backup but not in source)
 if [ -d "${BACKUP_DIR}" ]; then
     for bak_file in "${BACKUP_DIR}/"*.agent.md.bak; do
         [ -f "${bak_file}" ] || continue
         original_name="$(basename "${bak_file}" .bak)"
-        source_file="${SOURCE_DIR}/agents/${original_name}"
 
-        if [ ! -f "${source_file}" ]; then
-            # This was a user-created agent — restore it
+        # Check if this agent exists in any plugin
+        found=false
+        for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
+            if [ -f "${plugin_agents}/${original_name}" ]; then
+                found=true
+                break
+            fi
+        done
+
+        if [ "${found}" = false ]; then
             cp "${bak_file}" "${INSTALL_DIR}/agents/${original_name}"
             ok "Restored custom agent: ${original_name}"
         fi
@@ -194,11 +222,12 @@ else
     ok "${BOLD}Anvil v${NEW_VERSION} installed${NC}"
 fi
 printf "\n"
-printf "  ${BOLD}Location${NC}:  ${INSTALL_DIR}\n"
-printf "  ${BOLD}Agents${NC}:    ${INSTALL_DIR}/agents/\n"
-printf "  ${BOLD}Skills${NC}:    ${INSTALL_DIR}/skills/\n"
-printf "  ${BOLD}Commands${NC}:  ${INSTALL_DIR}/commands/\n"
-printf "  ${BOLD}Extension${NC}: ${INSTALL_DIR}/extension.mjs\n"
+printf "  ${BOLD}Location${NC}:   ${INSTALL_DIR}\n"
+printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
+printf "  ${BOLD}Agents${NC}:     ${INSTALL_DIR}/agents/\n"
+printf "  ${BOLD}Skills${NC}:     ${INSTALL_DIR}/skills/\n"
+printf "  ${BOLD}Commands${NC}:   ${INSTALL_DIR}/commands/\n"
+printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
 printf "\n"
 
 if [ -d "${BACKUP_DIR}" ] && [ "$(ls -A "${BACKUP_DIR}" 2>/dev/null)" ]; then

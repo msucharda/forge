@@ -2,43 +2,38 @@
 
 Evidence-first coding agents for [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli). Anvil verifies code before presenting it, attacks its own output with adversarial multi-model review, and tracks every verification step in a SQL ledger.
 
-## Agents
+This repository is a **marketplace** — install individual agent plugins or everything at once.
 
-| Agent | Description |
-|-------|-------------|
-| **anvil** | General-purpose coding agent. Evidence-first workflow with adversarial review, SQL-tracked verification, and automatic git hygiene. |
-| **anvil-bicep** | Azure Bicep infrastructure agent. Specializes in AVM modules, Bicep linting, PSRule WAF compliance, and ARM deployment validation. |
+## Plugins
 
-## Skills
-
-Skills tell the main model **when to activate** each agent automatically based on user intent:
-
-| Skill | Triggers On |
-|-------|-------------|
-| **anvil-code** | Code implementation, fixes, refactors — any non-infrastructure coding task |
-| **anvil-bicep** | `.bicep` / `.bicepparam` files, AVM modules, Azure infrastructure changes |
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/verify` | Run Anvil verification checks on current changes |
-| `/evidence` | Generate an evidence bundle for the current task |
+| Plugin | Description | Install |
+|--------|-------------|---------|
+| **anvil-core** | Shared commands (`/verify`, `/evidence`) and guardrails | Recommended for all users |
+| **anvil-code** | General-purpose coding agent with adversarial review | Install if you write application code |
+| **anvil-bicep** | Azure Bicep infrastructure agent with AVM modules | Install if you work with Azure Bicep |
 
 ## Install
 
-**One-liner** (requires `git`):
+### Option A: Install everything (extension + all plugins)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/anvil/main/install.sh | bash
-```
-
-**Or clone and install:**
-
-```bash
-git clone https://github.com/YOUR_USERNAME/anvil.git
+git clone https://github.com/msucharda/anvil.git
 cd anvil
 make install
+```
+
+This installs the extension runtime (tools and guardrails) plus all plugins to `~/.copilot/extensions/anvil/`.
+
+### Option B: Install individual plugins via marketplace
+
+Point Copilot CLI at this repository as a marketplace source, then install individual plugins:
+
+```bash
+# Install just the Bicep agent
+copilot plugin install msucharda/anvil --plugin anvil-bicep
+
+# Install just the general coding agent
+copilot plugin install msucharda/anvil --plugin anvil-code
 ```
 
 After installing, reload extensions in Copilot CLI:
@@ -50,11 +45,6 @@ After installing, reload extensions in Copilot CLI:
 
 Re-run the install command — the script detects existing installations and updates in place. User-modified agent files are backed up automatically.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/anvil/main/install.sh | bash
-```
-
-Or from a local clone:
 ```bash
 cd anvil && git pull && make install
 ```
@@ -70,53 +60,63 @@ Or from the repo:
 make uninstall
 ```
 
-## What Gets Installed
-
-```
-~/.copilot/extensions/anvil/
-├── plugin.json            # Plugin manifest — declares agents, skills, commands
-├── extension.mjs          # Extension — tools and hooks
-├── version.txt            # Installed version
-├── agents/                # Agent definitions (editable!)
-│   ├── anvil.agent.md
-│   └── anvil-bicep.agent.md
-├── skills/                # Routing skills — auto-activate agents by intent
-│   ├── anvil-code/
-│   │   └── SKILL.md
-│   └── anvil-bicep/
-│       └── SKILL.md
-└── commands/              # Slash commands
-    ├── verify.md
-    └── evidence.md
-```
-
 ## Architecture
 
 Anvil uses **two complementary systems**:
 
-| Concern | System | Files |
-|---------|--------|-------|
-| **Routing** (which agent handles the task) | Plugin system (`plugin.json`) | `agents/`, `skills/`, `commands/` |
-| **Runtime** (tools, guardrails, hooks) | Extension SDK (`extension.mjs`) | `extension.mjs` |
+| Concern | System | Location |
+|---------|--------|----------|
+| **Agents & Routing** | Plugin system (marketplace) | `plugins/` |
+| **Runtime Tools** | Extension SDK (`extension.mjs`) | `extension/` |
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Copilot CLI Main Model                                          │
-│                                                                  │
-│  Reads plugin.json → discovers skills, commands, agents          │
-│  Connects to extension.mjs → gets tools and hooks                │
-└────────┬──────────────┬──────────────┬──────────────┬────────────┘
+│  Copilot CLI                                                      │
+│                                                                    │
+│  Reads marketplace.json → discovers plugins                       │
+│  Reads plugin.json → discovers agents, skills, commands           │
+│  Connects to extension.mjs → gets tools and hooks                 │
+└────────┬──────────────┬──────────────┬──────────────┬─────────────┘
          │              │              │              │
-   ┌─────▼─────┐  ┌─────▼─────┐  ┌────▼────┐  ┌─────▼──────┐
-   │  Skills   │  │ Commands  │  │ Agents  │  │ Extension  │
-   │           │  │           │  │         │  │            │
-   │ anvil-    │  │ /verify   │  │ anvil   │  │ Tools:     │
-   │  code     │  │ /evidence │  │ anvil-  │  │  git_check │
-   │ anvil-    │  │           │  │  bicep  │  │  verify    │
-   │  bicep    │  │           │  │         │  │  bicep_*   │
-   └───────────┘  └───────────┘  └─────────┘  │ Hooks:     │
-                                              │  guardrails│
-                                              └────────────┘
+   ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐
+   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │Extension │
+   │            │ │            │ │            │ │          │
+   │ /verify    │ │ agent      │ │ agent      │ │ Tools:   │
+   │ /evidence  │ │ skill      │ │ skill      │ │ git_check│
+   │ guardrails │ │            │ │            │ │ verify   │
+   └────────────┘ └────────────┘ └────────────┘ │ bicep_*  │
+                                                └──────────┘
+```
+
+## What Gets Installed
+
+```
+~/.copilot/extensions/anvil/
+├── plugin.json             # Root manifest
+├── extension.mjs           # Runtime — tools and hooks
+├── version.txt             # Installed version
+├── plugins/                # Marketplace plugins (source of truth)
+│   ├── anvil-core/
+│   │   ├── plugin.json
+│   │   ├── hooks.json
+│   │   └── commands/
+│   │       ├── verify.md
+│   │       └── evidence.md
+│   ├── anvil-code/
+│   │   ├── plugin.json
+│   │   ├── agents/
+│   │   │   └── anvil-code.agent.md
+│   │   └── skills/
+│   │       └── anvil-code/SKILL.md
+│   └── anvil-bicep/
+│       ├── plugin.json
+│       ├── agents/
+│       │   └── anvil-bicep.agent.md
+│       └── skills/
+│           └── anvil-bicep/SKILL.md
+├── agents/                 # Assembled from plugins (for extension compat)
+├── skills/                 # Assembled from plugins
+└── commands/               # Assembled from plugins
 ```
 
 ## Extension Tools
@@ -132,45 +132,32 @@ The extension registers these tools, available in every Copilot CLI session:
 | `anvil_bicep_build` | Compile Bicep to ARM template, report errors |
 | `anvil_bicep_param_check` | Cross-reference `.bicep` params vs `.bicepparam` files |
 
-## Extension Hooks
+## Commands
 
-| Hook | Behavior |
-|------|----------|
-| Session start | Logs extension status, injects verification context |
-| User prompt | Injects available tool reminders |
-| Pre-tool | Blocks `rm -rf /`, warns on `git push` to main/master |
-| Post-tool | Reminds to verify after Bicep file edits |
+| Command | Description |
+|---------|-------------|
+| `/verify` | Run Anvil verification checks on current changes |
+| `/evidence` | Generate an evidence bundle for the current task |
 
 ## Customization
 
 ### Edit Agent Behavior
 
-Agent files live in `~/.copilot/extensions/anvil/agents/`. Edit them directly — changes take effect on next `/clear`:
+Agent files live in `~/.copilot/extensions/anvil/plugins/*/agents/`. Edit them directly — changes take effect on next `/clear`:
 
 ```bash
-# Open the general Anvil agent
-$EDITOR ~/.copilot/extensions/anvil/agents/anvil.agent.md
+$EDITOR ~/.copilot/extensions/anvil/plugins/anvil-code/agents/anvil-code.agent.md
 ```
 
-### Add a New Agent
+### Add a New Plugin
 
-Drop a `.agent.md` file in the `agents/` directory and add a corresponding skill in `skills/`:
+Create a new directory under `plugins/` with a `plugin.json`, agent file, and skill:
 
 ```bash
-cat > ~/.copilot/extensions/anvil/agents/anvil-terraform.agent.md << 'EOF'
----
-name: anvil-terraform
-description: Evidence-first Terraform agent with HCL validation and plan verification.
-model: sonnet
----
-
-# Anvil Terraform
-
-You are Anvil Terraform. You verify infrastructure code before presenting it...
-EOF
+mkdir -p plugins/anvil-terraform/agents plugins/anvil-terraform/skills/anvil-terraform
 ```
 
-Reload with `/clear` — the new agent appears automatically.
+Add the plugin to `marketplace.json` and run `make install`.
 
 ### Agent File Format
 
@@ -189,8 +176,11 @@ Full behavioral instructions in markdown...
 ## Development
 
 ```bash
-# Check extension syntax, plugin.json, and frontmatter
+# Check extension syntax, plugin.json, marketplace.json, and all plugin files
 make lint
+
+# Check only plugin files
+make lint-plugins
 
 # Run all checks
 make test
@@ -202,10 +192,12 @@ make install
 ## Contributing
 
 1. Fork the repo
-2. Add your agent file to `agents/` and a routing skill in `skills/`
-3. If the agent needs custom tools, add them to `extension/extension.mjs` with a unique prefix
-4. Run `make lint` to verify syntax
-5. Submit a PR
+2. Create your plugin in `plugins/your-plugin-name/`
+3. Add a `plugin.json`, agent file, and routing skill
+4. Add the plugin to `.github/plugin/marketplace.json`
+5. If the agent needs custom tools, add them to `extension/extension.mjs` with a unique prefix
+6. Run `make lint` to verify syntax
+7. Submit a PR
 
 ## License
 

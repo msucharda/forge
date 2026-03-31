@@ -39,15 +39,31 @@ function isDangerousCommand(cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// Agent discovery — reads agents/*.agent.md names for logging
+// Agent discovery — reads agent names from agents/ and plugins/*/agents/
 // (Agent registration is handled by plugin.json, not the extension SDK)
 // ---------------------------------------------------------------------------
 
 function discoverAgentNames() {
-    if (!existsSync(AGENTS_DIR)) return [];
-    return readdirSync(AGENTS_DIR)
-        .filter((f) => f.endsWith(".agent.md"))
-        .map((f) => f.replace(".agent.md", ""));
+    const names = [];
+    // Legacy: agents/ directory (extension-based install)
+    if (existsSync(AGENTS_DIR)) {
+        names.push(...readdirSync(AGENTS_DIR)
+            .filter((f) => f.endsWith(".agent.md"))
+            .map((f) => f.replace(".agent.md", "")));
+    }
+    // Marketplace: plugins/*/agents/ directories
+    const pluginsDir = join(__dirname, "plugins");
+    if (existsSync(pluginsDir)) {
+        for (const plugin of readdirSync(pluginsDir)) {
+            const agentsPath = join(pluginsDir, plugin, "agents");
+            if (existsSync(agentsPath)) {
+                names.push(...readdirSync(agentsPath)
+                    .filter((f) => f.endsWith(".agent.md"))
+                    .map((f) => f.replace(".agent.md", "")));
+            }
+        }
+    }
+    return [...new Set(names)];
 }
 
 const agentNames = discoverAgentNames();
