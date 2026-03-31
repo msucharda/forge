@@ -22,7 +22,10 @@ cd anvil
 make install
 ```
 
-This installs the extension runtime (tools and guardrails) plus all plugins to `~/.copilot/extensions/anvil/`.
+This installs:
+- **Agents** to `~/.copilot/agents/` (discoverable via `/agent`)
+- **Skills** to `~/.copilot/skills/` (discoverable via `/skills`)
+- **Extension** (tools & hooks) to `~/.copilot/extensions/anvil/`
 
 ### Option B: Install individual plugins via marketplace
 
@@ -36,7 +39,7 @@ copilot plugin install msucharda/anvil --plugin anvil-bicep
 copilot plugin install msucharda/anvil --plugin anvil-code
 ```
 
-After installing, reload extensions in Copilot CLI:
+After installing, reload in Copilot CLI:
 ```
 /clear
 ```
@@ -52,37 +55,41 @@ cd anvil && git pull && make install
 ## Uninstall
 
 ```bash
-rm -rf ~/.copilot/extensions/anvil
+make uninstall
 ```
 
-Or from the repo:
+Or manually:
 ```bash
-make uninstall
+rm -rf ~/.copilot/extensions/anvil
+rm -f ~/.copilot/agents/anvil-*.agent.md
+rm -rf ~/.copilot/skills/anvil-code ~/.copilot/skills/anvil-bicep
 ```
 
 ## Architecture
 
-Anvil uses **two complementary systems**:
+Anvil uses **two complementary systems** installed to separate Copilot CLI discovery paths:
 
-| Concern | System | Location |
-|---------|--------|----------|
-| **Agents & Routing** | Plugin system (marketplace) | `plugins/` |
-| **Runtime Tools** | Extension SDK (`extension.mjs`) | `extension/` |
+| Concern | System | Install Location |
+|---------|--------|------------------|
+| **Agents** | Custom agents (`.agent.md`) | `~/.copilot/agents/` → `/agent` |
+| **Skills** | Skill system (`SKILL.md`) | `~/.copilot/skills/` → `/skills` |
+| **Runtime Tools** | Extension SDK (`extension.mjs`) | `~/.copilot/extensions/anvil/` |
+| **Commands** | Extension commands | `~/.copilot/extensions/anvil/commands/` |
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Copilot CLI                                                      │
 │                                                                    │
-│  Reads marketplace.json → discovers plugins                       │
-│  Reads plugin.json → discovers agents, skills, commands           │
-│  Connects to extension.mjs → gets tools and hooks                 │
+│  /agent     → discovers ~/.copilot/agents/*.agent.md              │
+│  /skills    → discovers ~/.copilot/skills/*/SKILL.md              │
+│  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs     │
 └────────┬──────────────┬──────────────┬──────────────┬─────────────┘
          │              │              │              │
    ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐
    │ anvil-core │ │ anvil-code │ │anvil-bicep │ │Extension │
    │            │ │            │ │            │ │          │
-   │ /verify    │ │ agent      │ │ agent      │ │ Tools:   │
-   │ /evidence  │ │ skill      │ │ skill      │ │ git_check│
+   │ /verify    │ │ agent.md   │ │ agent.md   │ │ Tools:   │
+   │ /evidence  │ │ SKILL.md   │ │ SKILL.md   │ │ git_check│
    │ guardrails │ │            │ │            │ │ verify   │
    └────────────┘ └────────────┘ └────────────┘ │ bicep_*  │
                                                 └──────────┘
@@ -91,32 +98,25 @@ Anvil uses **two complementary systems**:
 ## What Gets Installed
 
 ```
-~/.copilot/extensions/anvil/
-├── plugin.json             # Root manifest
-├── extension.mjs           # Runtime — tools and hooks
-├── version.txt             # Installed version
-├── plugins/                # Marketplace plugins (source of truth)
-│   ├── anvil-core/
-│   │   ├── plugin.json
-│   │   ├── hooks.json
-│   │   └── commands/
-│   │       ├── verify.md
-│   │       └── evidence.md
-│   ├── anvil-code/
-│   │   ├── plugin.json
-│   │   ├── agents/
-│   │   │   └── anvil-code.agent.md
-│   │   └── skills/
-│   │       └── anvil-code/SKILL.md
-│   └── anvil-bicep/
-│       ├── plugin.json
-│       ├── agents/
-│       │   └── anvil-bicep.agent.md
-│       └── skills/
-│           └── anvil-bicep/SKILL.md
-├── agents/                 # Assembled from plugins (for extension compat)
-├── skills/                 # Assembled from plugins
-└── commands/               # Assembled from plugins
+~/.copilot/
+├── agents/                          ← Copilot CLI agent discovery (/agent)
+│   ├── anvil-code.agent.md
+│   └── anvil-bicep.agent.md
+├── skills/                          ← Copilot CLI skill discovery (/skills)
+│   ├── anvil-code/SKILL.md
+│   └── anvil-bicep/SKILL.md
+└── extensions/
+    └── anvil/
+        ├── extension.mjs            ← Runtime — tools and hooks
+        ├── plugin.json              ← Extension metadata
+        ├── version.txt              ← Installed version
+        ├── commands/                ← Slash commands
+        │   ├── verify.md
+        │   └── evidence.md
+        └── plugins/                 ← Source packages (for reference)
+            ├── anvil-core/
+            ├── anvil-code/
+            └── anvil-bicep/
 ```
 
 ## Extension Tools
@@ -143,10 +143,10 @@ The extension registers these tools, available in every Copilot CLI session:
 
 ### Edit Agent Behavior
 
-Agent files live in `~/.copilot/extensions/anvil/plugins/*/agents/`. Edit them directly — changes take effect on next `/clear`:
+Agent files live in `~/.copilot/agents/`. Edit them directly — changes take effect on next `/clear`:
 
 ```bash
-$EDITOR ~/.copilot/extensions/anvil/plugins/anvil-code/agents/anvil-code.agent.md
+$EDITOR ~/.copilot/agents/anvil-code.agent.md
 ```
 
 ### Add a New Plugin

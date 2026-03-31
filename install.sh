@@ -12,6 +12,8 @@ set -euo pipefail
 
 REPO_URL="${ANVIL_REPO_URL:-https://github.com/YOUR_USERNAME/anvil.git}"
 INSTALL_DIR="${HOME}/.copilot/extensions/anvil"
+AGENTS_DIR="${HOME}/.copilot/agents"
+SKILLS_DIR="${HOME}/.copilot/skills"
 BACKUP_DIR="${HOME}/.copilot/extensions/.anvil-backup"
 TMP_DIR=""
 
@@ -101,14 +103,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Backup user-modified agent files
+# Backup user-modified agent files (check ~/.copilot/agents/)
 # ---------------------------------------------------------------------------
 
-if [ "${IS_UPDATE}" = true ] && [ -d "${INSTALL_DIR}/agents" ]; then
+if [ "${IS_UPDATE}" = true ] && [ -d "${AGENTS_DIR}" ]; then
     info "Checking for user-modified agent files..."
     mkdir -p "${BACKUP_DIR}"
 
-    for agent_file in "${INSTALL_DIR}/agents/"*.agent.md; do
+    for agent_file in "${AGENTS_DIR}/"anvil-*.agent.md; do
         [ -f "${agent_file}" ] || continue
         base="$(basename "${agent_file}")"
 
@@ -138,45 +140,52 @@ if [ "${IS_UPDATE}" = true ] && [ -d "${INSTALL_DIR}/agents" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Migrate: clean old agent/skill files from extensions directory
+# ---------------------------------------------------------------------------
+
+if [ "${IS_UPDATE}" = true ]; then
+    rm -f "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null || true
+    rm -rf "${INSTALL_DIR}/skills" 2>/dev/null || true
+    rmdir "${INSTALL_DIR}/agents" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
-mkdir -p "${INSTALL_DIR}/agents" "${INSTALL_DIR}/skills" "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins"
+mkdir -p "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins" "${AGENTS_DIR}" "${SKILLS_DIR}"
 
-# Copy extension
+# Copy extension (tools & hooks)
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
 ok "Installed extension.mjs"
 
-# Copy plugin manifest (root-level for extension compatibility)
+# Copy plugin manifest
 cp "${SOURCE_DIR}/plugin.json" "${INSTALL_DIR}/plugin.json"
 ok "Installed plugin.json"
 
-# Copy plugins directory (marketplace structure)
+# Copy plugins directory (source of truth for packaging)
 rm -rf "${INSTALL_DIR}/plugins"
 cp -r "${SOURCE_DIR}/plugins" "${INSTALL_DIR}/plugins"
 plugin_count=$(ls -d "${INSTALL_DIR}/plugins/"*/ 2>/dev/null | wc -l)
 ok "Installed ${plugin_count} plugin(s)"
 
-# Assemble agents from all plugins into agents/ (for extension compatibility)
-rm -f "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null || true
+# Install agents to ~/.copilot/agents/ (Copilot CLI discovery path for /agent)
 for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
     [ -d "${plugin_agents}" ] || continue
-    cp "${plugin_agents}/"*.agent.md "${INSTALL_DIR}/agents/" 2>/dev/null || true
+    cp "${plugin_agents}/"*.agent.md "${AGENTS_DIR}/" 2>/dev/null || true
 done
-agent_count=$(ls -1 "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null | wc -l)
-ok "Assembled ${agent_count} agent(s) from plugins"
+agent_count=$(ls -1 "${AGENTS_DIR}/"anvil-*.agent.md 2>/dev/null | wc -l)
+ok "Installed ${agent_count} agent(s) to ${AGENTS_DIR}/"
 
-# Assemble skills from all plugins into skills/
-rm -rf "${INSTALL_DIR}/skills"
-mkdir -p "${INSTALL_DIR}/skills"
+# Install skills to ~/.copilot/skills/ (Copilot CLI discovery path)
 for plugin_skills in "${SOURCE_DIR}/plugins/"*/skills; do
     [ -d "${plugin_skills}" ] || continue
-    cp -r "${plugin_skills}/"* "${INSTALL_DIR}/skills/" 2>/dev/null || true
+    cp -r "${plugin_skills}/"* "${SKILLS_DIR}/" 2>/dev/null || true
 done
-skill_count=$(find "${INSTALL_DIR}/skills" -name "SKILL.md" 2>/dev/null | wc -l)
-ok "Assembled ${skill_count} skill(s) from plugins"
+skill_count=$(find "${SKILLS_DIR}" -maxdepth 2 -name "SKILL.md" -path "*/anvil-*/*" 2>/dev/null | wc -l)
+ok "Installed ${skill_count} skill(s) to ${SKILLS_DIR}/"
 
-# Assemble commands from all plugins into commands/
+# Assemble commands from all plugins into extension commands/
 rm -rf "${INSTALL_DIR}/commands"
 mkdir -p "${INSTALL_DIR}/commands"
 for plugin_commands in "${SOURCE_DIR}/plugins/"*/commands; do
@@ -202,7 +211,7 @@ if [ -d "${BACKUP_DIR}" ]; then
         done
 
         if [ "${found}" = false ]; then
-            cp "${bak_file}" "${INSTALL_DIR}/agents/${original_name}"
+            cp "${bak_file}" "${AGENTS_DIR}/${original_name}"
             ok "Restored custom agent: ${original_name}"
         fi
     done
@@ -222,12 +231,11 @@ else
     ok "${BOLD}Anvil v${NEW_VERSION} installed${NC}"
 fi
 printf "\n"
-printf "  ${BOLD}Location${NC}:   ${INSTALL_DIR}\n"
-printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
-printf "  ${BOLD}Agents${NC}:     ${INSTALL_DIR}/agents/\n"
-printf "  ${BOLD}Skills${NC}:     ${INSTALL_DIR}/skills/\n"
-printf "  ${BOLD}Commands${NC}:   ${INSTALL_DIR}/commands/\n"
 printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
+printf "  ${BOLD}Agents${NC}:     ${AGENTS_DIR}/\n"
+printf "  ${BOLD}Skills${NC}:     ${SKILLS_DIR}/\n"
+printf "  ${BOLD}Commands${NC}:   ${INSTALL_DIR}/commands/\n"
+printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
 printf "\n"
 
 if [ -d "${BACKUP_DIR}" ] && [ "$(ls -A "${BACKUP_DIR}" 2>/dev/null)" ]; then
@@ -237,13 +245,13 @@ if [ -d "${BACKUP_DIR}" ] && [ "$(ls -A "${BACKUP_DIR}" 2>/dev/null)" ]; then
 fi
 
 printf "  ${BOLD}Next steps${NC}:\n"
-printf "  1. Reload extensions in Copilot CLI:  ${BLUE}/clear${NC}\n"
-printf "  2. Or restart the CLI\n"
+printf "  1. Reload in Copilot CLI:  ${BLUE}/clear${NC}\n"
+printf "  2. Select an agent:        ${BLUE}/agent${NC}\n"
 printf "\n"
 printf "  ${BOLD}Customize agents${NC}:\n"
-printf "  Edit files in ${INSTALL_DIR}/agents/ — changes take effect on next /clear\n"
-printf "  Add new agents: drop a .agent.md file in the agents/ directory\n"
+printf "  Edit files in ${AGENTS_DIR}/ — changes take effect on next /clear\n"
+printf "  Add new agents: drop a .agent.md file in ${AGENTS_DIR}/\n"
 printf "\n"
 printf "  ${BOLD}Uninstall${NC}:\n"
-printf "  rm -rf ${INSTALL_DIR}\n"
+printf "  make uninstall   (or run manually — see README)\n"
 printf "\n"

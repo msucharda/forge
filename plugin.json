@@ -7,7 +7,5 @@
   },
   "license": "MIT",
   "keywords": ["verification", "code-review", "adversarial", "evidence", "bicep", "azure"],
-  "agents": "agents/",
-  "skills": "skills/",
   "commands": "commands/"
 }

@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { joinSession } from "@github/copilot-sdk/extension";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = join(__dirname, "agents");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,48 +38,15 @@ function isDangerousCommand(cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// Agent discovery — reads agent names from agents/ and plugins/*/agents/
-// (Agent registration is handled by plugin.json, not the extension SDK)
-// ---------------------------------------------------------------------------
-
-function discoverAgentNames() {
-    const names = [];
-    // Legacy: agents/ directory (extension-based install)
-    if (existsSync(AGENTS_DIR)) {
-        names.push(...readdirSync(AGENTS_DIR)
-            .filter((f) => f.endsWith(".agent.md"))
-            .map((f) => f.replace(".agent.md", "")));
-    }
-    // Marketplace: plugins/*/agents/ directories
-    const pluginsDir = join(__dirname, "plugins");
-    if (existsSync(pluginsDir)) {
-        for (const plugin of readdirSync(pluginsDir)) {
-            const agentsPath = join(pluginsDir, plugin, "agents");
-            if (existsSync(agentsPath)) {
-                names.push(...readdirSync(agentsPath)
-                    .filter((f) => f.endsWith(".agent.md"))
-                    .map((f) => f.replace(".agent.md", "")));
-            }
-        }
-    }
-    return [...new Set(names)];
-}
-
-const agentNames = discoverAgentNames();
-
-// ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
 const session = await joinSession({
     hooks: {
         onSessionStart: async (input) => {
-            const names = agentNames.length > 0
-                ? agentNames.map((n) => `\`${n}\``).join(", ")
-                : "(none found)";
             return {
                 additionalContext: [
-                    `🔨 Anvil extension active. Loaded agents: ${names}.`,
+                    "🔨 Anvil extension active.",
                     "The anvil_checks SQL table schema is available for verification tracking.",
                     "Use anvil_git_check before starting Medium/Large tasks.",
                 ].join("\n"),
@@ -394,9 +360,4 @@ const session = await joinSession({
     ],
 });
 
-// Log loaded agents
-if (agentNames.length > 0) {
-    await session.log(`🔨 Anvil loaded: ${agentNames.join(", ")}`);
-} else {
-    await session.log("🔨 Anvil extension loaded (no agent files found in agents/)", { level: "warning" });
-}
+await session.log("🔨 Anvil extension loaded — tools and guardrails active");

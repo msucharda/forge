@@ -1,6 +1,8 @@
 .PHONY: install update uninstall lint lint-plugins test
 
 INSTALL_DIR := $(HOME)/.copilot/extensions/anvil
+AGENTS_DIR := $(HOME)/.copilot/agents
+SKILLS_DIR := $(HOME)/.copilot/skills
 
 ## install — Install or update Anvil to ~/.copilot/extensions/anvil/
 install:
@@ -9,19 +11,31 @@ install:
 ## update — Same as install (the script handles both)
 update: install
 
-## uninstall — Remove Anvil from ~/.copilot/extensions/
+## uninstall — Remove Anvil from all Copilot CLI locations
 uninstall:
 	@if [ -d "$(INSTALL_DIR)" ]; then \
 		rm -rf "$(INSTALL_DIR)"; \
-		printf "\033[0;32m✔\033[0m Anvil uninstalled from $(INSTALL_DIR)\n"; \
-		printf "  Run /clear in Copilot CLI to reload extensions.\n"; \
+		printf "\033[0;32m✔\033[0m Removed extension from $(INSTALL_DIR)\n"; \
 	else \
-		printf "\033[0;33m⚠\033[0m Anvil is not installed at $(INSTALL_DIR)\n"; \
+		printf "\033[0;33m⚠\033[0m Extension not installed at $(INSTALL_DIR)\n"; \
 	fi
+	@for f in $(AGENTS_DIR)/anvil-*.agent.md; do \
+		if [ -f "$$f" ]; then \
+			rm -f "$$f"; \
+			printf "\033[0;32m✔\033[0m Removed agent: $$(basename $$f)\n"; \
+		fi; \
+	done
+	@for d in $(SKILLS_DIR)/anvil-*; do \
+		if [ -d "$$d" ]; then \
+			rm -rf "$$d"; \
+			printf "\033[0;32m✔\033[0m Removed skill: $$(basename $$d)\n"; \
+		fi; \
+	done
 	@if [ -d "$(HOME)/.copilot/extensions/.anvil-backup" ]; then \
 		rm -rf "$(HOME)/.copilot/extensions/.anvil-backup"; \
 		printf "\033[0;32m✔\033[0m Removed backup directory\n"; \
 	fi
+	@printf "  Run /clear in Copilot CLI to reload.\n"
 
 ## lint — Check extension.mjs syntax, plugin.json validity, and all plugin files
 lint: lint-plugins
