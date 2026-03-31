@@ -35,6 +35,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Portable checksum function (macOS has shasum, Linux has sha256sum)
+file_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        # Fallback: openssl (available on both platforms)
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Detect source: running from repo clone or curl pipe?
 # ---------------------------------------------------------------------------
@@ -102,8 +114,8 @@ if [ "${IS_UPDATE}" = true ] && [ -d "${INSTALL_DIR}/agents" ]; then
 
         if [ -f "${source_file}" ]; then
             # Compare checksums — if user modified the file, back it up
-            installed_hash="$(sha256sum "${agent_file}" | cut -d' ' -f1)"
-            source_hash="$(sha256sum "${source_file}" | cut -d' ' -f1)"
+            installed_hash="$(file_hash "${agent_file}")"
+            source_hash="$(file_hash "${source_file}")"
 
             if [ "${installed_hash}" != "${source_hash}" ]; then
                 # Check if the installed file matches the OLD source (not modified by user)

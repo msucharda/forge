@@ -3,7 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { joinSession } from "@github/copilot-sdk/extension";
 
@@ -17,14 +17,30 @@ const AGENTS_DIR = join(__dirname, "agents");
 function shell(cmd, args = [], opts = {}) {
     return new Promise((resolve) => {
         execFile(cmd, args, { maxBuffer: 2 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
-            if (err) resolve({ ok: false, code: err.code ?? 1, stdout: stdout?.trim() ?? "", stderr: stderr?.trim() ?? err.message });
-            else resolve({ ok: true, code: 0, stdout: stdout.trim(), stderr: stderr?.trim() ?? "" });
+            if (err) {
+                const code = typeof err.code === "number" ? err.code : 1;
+                resolve({ ok: false, code, stdout: stdout?.trim() ?? "", stderr: stderr?.trim() ?? err.message });
+            } else {
+                resolve({ ok: true, code: 0, stdout: stdout.trim(), stderr: stderr?.trim() ?? "" });
+            }
         });
     });
 }
 
+function sqlEscape(s) {
+    return String(s).replace(/'/g, "''");
+}
+
+const DANGEROUS_CMD_RE = /\brm\s+.*-[^\s]*r[^\s]*f|rm\s+.*-[^\s]*f[^\s]*r|\brm\s+--recursive\b.*--force\b|\brm\s+--force\b.*--recursive\b/i;
+
+function isDangerousCommand(cmd) {
+    if (DANGEROUS_CMD_RE.test(cmd) && /\s\/(?:\s|$|"|')/.test(cmd)) return "recursive delete from root";
+    return null;
+}
+
 function parseFrontmatter(content) {
-    const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+    const normalized = content.replace(/\r\n/g, "\n");
+    const match = normalized.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (!match) return null;
     const meta = {};
     for (const line of match[1].split("\n")) {
@@ -99,11 +115,11 @@ const session = await joinSession({
         onPreToolUse: async (input) => {
             if (input.toolName === "bash") {
                 const cmd = String(input.toolArgs?.command || "");
-                // Block recursive delete from root
-                if (/rm\s+-rf\s+\//i.test(cmd)) {
+                const danger = isDangerousCommand(cmd);
+                if (danger) {
                     return {
                         permissionDecision: "deny",
-                        permissionDecisionReason: "🔨 Anvil: recursive delete from root is blocked.",
+                        permissionDecisionReason: `🔨 Anvil: ${danger} is blocked.`,
                     };
                 }
                 // Warn on direct push to main/master
@@ -143,13 +159,16 @@ const session = await joinSession({
                 required: ["task_id"],
             },
             handler: async (args) => {
-                const [status, branch, toplevel] = await Promise.all([
+                const [status, branch, toplevel, gitDir, gitCommonDir] = await Promise.all([
                     shell("git", ["status", "--porcelain"]),
                     shell("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
                     shell("git", ["rev-parse", "--show-toplevel"]),
+                    shell("git", ["rev-parse", "--git-dir"]),
+                    shell("git", ["rev-parse", "--git-common-dir"]),
                 ]);
 
                 const cwd = process.cwd();
+                const isWorktree = gitDir.ok && gitCommonDir.ok && gitDir.stdout !== gitCommonDir.stdout;
                 const report = {
                     dirty: status.ok && status.stdout.length > 0,
                     dirty_files: status.ok ? status.stdout.split("\n").filter(Boolean).length : 0,
@@ -158,7 +177,7 @@ const session = await joinSession({
                     is_main_branch: branch.ok && ["main", "master"].includes(branch.stdout),
                     toplevel: toplevel.ok ? toplevel.stdout : "unknown",
                     cwd,
-                    is_worktree: toplevel.ok && toplevel.stdout !== cwd,
+                    is_worktree: isWorktree,
                     suggested_branch: `anvil/${args.task_id}`,
                 };
 
@@ -185,9 +204,19 @@ const session = await joinSession({
                 required: ["command", "check_name", "task_id", "phase"],
             },
             handler: async (args) => {
+                // Apply same guardrails as onPreToolUse
+                const danger = isDangerousCommand(args.command);
+                if (danger) {
+                    return JSON.stringify({
+                        error: `🔨 Anvil blocked: ${danger} is not allowed via anvil_verify.`,
+                        passed: 0,
+                    }, null, 2);
+                }
+
                 const result = await shell("bash", ["-c", args.command]);
                 const output = (result.stdout || result.stderr || "").slice(0, 500);
                 const passed = result.ok ? 1 : 0;
+                const exitCode = typeof result.code === "number" ? result.code : (result.ok ? 0 : 1);
 
                 return JSON.stringify({
                     check_name: args.check_name,
@@ -195,10 +224,10 @@ const session = await joinSession({
                     phase: args.phase,
                     tool: "anvil_verify",
                     command: args.command,
-                    exit_code: typeof result.code === "number" ? result.code : (result.ok ? 0 : 1),
+                    exit_code: exitCode,
                     output_snippet: output,
                     passed,
-                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${args.task_id}', '${args.phase}', '${args.check_name}', 'anvil_verify', '${args.command.replace(/'/g, "''")}', ${typeof result.code === "number" ? result.code : (result.ok ? 0 : 1)}, '${output.replace(/'/g, "''")}', ${passed});`,
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', '${sqlEscape(args.phase)}', '${sqlEscape(args.check_name)}', 'anvil_verify', '${sqlEscape(args.command)}', ${exitCode}, '${sqlEscape(output)}', ${passed});`,
                 }, null, 2);
             },
         },
@@ -217,12 +246,13 @@ const session = await joinSession({
             },
             handler: async (args) => {
                 const emoji = { green: "🟢", yellow: "🟡", red: "🔴" }[args.risk] || "🟡";
+                const safeTaskId = sqlEscape(args.task_id);
                 return [
                     `Run this SQL to generate the evidence bundle:`,
                     ``,
                     `\`\`\`sql`,
                     `SELECT phase, check_name, tool, command, exit_code, passed, output_snippet`,
-                    `FROM anvil_checks WHERE task_id = '${args.task_id}' ORDER BY phase, id;`,
+                    `FROM anvil_checks WHERE task_id = '${safeTaskId}' ORDER BY phase, id;`,
                     `\`\`\``,
                     ``,
                     `Then present as:`,
@@ -312,25 +342,42 @@ const session = await joinSession({
             },
             handler: async (args) => {
                 const bicepFile = args.bicep_file || "infra/main.bicep";
-                const paramGlob = args.param_glob || "infra/main.*.bicepparam";
+                const paramPattern = args.param_glob || "infra/main.*.bicepparam";
 
-                // Find param files
-                const findResult = await shell("bash", ["-c", `ls ${paramGlob} 2>/dev/null || echo ""`]);
-                const paramFiles = findResult.stdout.split("\n").filter(Boolean);
-
-                if (paramFiles.length === 0) {
-                    return JSON.stringify({ error: `No .bicepparam files found matching ${paramGlob}` });
+                // Find param files using Node fs (no shell injection)
+                const paramDir = dirname(paramPattern);
+                const globSuffix = basename(paramPattern);
+                let paramFiles = [];
+                try {
+                    const dir = existsSync(paramDir) ? readdirSync(paramDir) : [];
+                    // Convert simple glob pattern to regex (supports * wildcard)
+                    const regexStr = "^" + globSuffix.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$";
+                    const re = new RegExp(regexStr);
+                    paramFiles = dir.filter((f) => re.test(f)).map((f) => join(paramDir, f));
+                } catch {
+                    paramFiles = [];
                 }
 
-                // Extract param declarations from .bicep (params without defaults are required)
+                if (paramFiles.length === 0) {
+                    return JSON.stringify({ error: `No .bicepparam files found matching ${paramPattern}` });
+                }
+
                 if (!existsSync(bicepFile)) {
                     return JSON.stringify({ error: `Bicep file not found: ${bicepFile}` });
                 }
                 const bicepContent = readFileSync(bicepFile, "utf-8");
-                const paramDecls = [];
+                // Only collect params WITHOUT default values (those are required)
+                const requiredParams = [];
+                const allParams = [];
                 for (const line of bicepContent.split("\n")) {
                     const match = line.match(/^param\s+(\w+)/);
-                    if (match) paramDecls.push(match[1]);
+                    if (match) {
+                        allParams.push(match[1]);
+                        // Param has a default if the line contains '=' after the type
+                        if (!/=/.test(line.replace(/^param\s+\w+\s+\w+/, ""))) {
+                            requiredParams.push(match[1]);
+                        }
+                    }
                 }
 
                 // Check each param file
@@ -342,14 +389,15 @@ const session = await joinSession({
                         const match = line.match(/^param\s+(\w+)/);
                         if (match) definedParams.push(match[1]);
                     }
-                    const missing = paramDecls.filter((p) => !definedParams.includes(p));
-                    const extra = definedParams.filter((p) => !paramDecls.includes(p));
+                    const missing = requiredParams.filter((p) => !definedParams.includes(p));
+                    const extra = definedParams.filter((p) => !allParams.includes(p));
                     results[pf] = { missing, extra, ok: missing.length === 0 && extra.length === 0 };
                 }
 
                 return JSON.stringify({
                     bicep_file: bicepFile,
-                    declared_params: paramDecls,
+                    declared_params: allParams,
+                    required_params: requiredParams,
                     param_files: results,
                     all_ok: Object.values(results).every((r) => r.ok),
                 }, null, 2);
