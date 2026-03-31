@@ -34,7 +34,7 @@ Show a `⚠️ Anvil pushback` callout, then call `ask_user` with choices ("Proc
 
 ## Task Sizing
 
-- **Small** (typo, rename, config tweak, one-liner): Implement → Quick Verify (5a + 5b only - no ledger, no adversarial review, no evidence bundle). Exception: 🔴 files escalate to Large (3 reviewers).
+- **Small** (typo, rename, config tweak, one-liner): Implement → Quick Verify (5a + 5b only - no ledger, no adversarial review, no evidence bundle). Exception: 🔴 files escalate to the full Large workflow (2 reviewers).
 - **Medium** (bug fix, feature addition, refactor): Full Anvil Loop with **1 adversarial reviewer**.
 - **Large** (new feature, multi-file architecture, auth/crypto/payments, OR any 🔴 files): Full Anvil Loop with **2 adversarial reviewers** + `ask_user` at Plan step.
 
@@ -48,7 +48,7 @@ If unsure, treat as Medium.
 ## Verification Ledger
 
 All verification is recorded in SQL. This prevents hallucinated verification.
-Use the internally managed database `session_store` for all SQL in this file. Never create or use project-local DB files (e.g., `anvil_checks.db`).
+Use the default `session` database for the `anvil_checks` ledger (it is writable). Use `session_store` (read-only) only for Recall queries in Step 1b. Never create or use project-local DB files (e.g., `anvil_checks.db`).
 
 At the start of every Medium or Large task, generate a `task_id` slug from the task description (e.g., `fix-login-crash`, `add-user-avatar`). Use this same `task_id` consistently for ALL ledger operations in this task.
 
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS anvil_checks (
 ```
 
 **Rule: Every verification step must be an INSERT. The Evidence Bundle is a SELECT, not prose. If the INSERT didn't happen, the verification didn't happen.**
-**Rule: All ledger SQL runs against `session_store` only. Do not create database files in the repo.**
+**Rule: All ledger SQL (CREATE TABLE, INSERT, SELECT on `anvil_checks`) runs against the default `session` database. Recall queries (Step 1b) run against `session_store`. Do not create database files in the repo.**
 
 ## The Anvil Loop
 
@@ -224,7 +224,7 @@ prompt: "Review the staged changes via `git --no-pager diff --staged`.
          If nothing wrong, say so."
 ```
 
-**Large OR 🔴 files:** Three reviewers in parallel (same prompt):
+**Large OR 🔴 files:** Two reviewers in parallel (same prompt):
 
 ```
 agent_type: "code-review", model: "gpt-5.4"
@@ -294,11 +294,11 @@ Present:
 
 ### 6. Learn (after verification, before presenting)
 
-Store confirmed facts immediately - don't wait for user acceptance (the session may end):
-1. **Working build/test command discovered during 5b?** → `store_memory` immediately after verification succeeds.
-2. **Codebase pattern found in existing code (Step 2) not in instructions?** → `store_memory`
-3. **Reviewer caught something your verification missed?** → `store_memory` the gap and how to check for it next time.
-4. **Fixed a regression you introduced?** → `store_memory` the file + what went wrong, so Recall can flag it in future sessions.
+Store confirmed facts immediately — don't wait for user acceptance (the session may end):
+1. **Working build/test command discovered during 5b?** → Update the project instruction file (`.github/copilot-instructions.md` or `AGENTS.md`) with the confirmed command immediately after verification succeeds.
+2. **Codebase pattern found in existing code (Step 2) not in instructions?** → Append it to the project instruction file so future sessions inherit it.
+3. **Reviewer caught something your verification missed?** → Document the gap and how to check for it in the project instruction file.
+4. **Fixed a regression you introduced?** → Document the file + what went wrong in the project instruction file, so Recall can flag it in future sessions.
 
 Do NOT store: obvious facts, things already in project instructions, or facts about code you just wrote (it might not get merged).
 
@@ -337,7 +337,7 @@ Discover dynamically - don't guess:
 4. Infer from ecosystem conventions
 5. `ask_user` only after all above fail
 
-Once confirmed working, save with `store_memory`.
+Once confirmed working, update the project instruction file (`.github/copilot-instructions.md` or `AGENTS.md`) with the discovered command so future sessions inherit it.
 
 ## Documentation Lookup
 
