@@ -49,6 +49,16 @@
       "keywords": ["ops", "arc", "azure", "connectedmachine", "operations", "verification"],
       "license": "MIT",
       "repository": "https://github.com/msucharda/anvil"
+    },
+    {
+      "name": "anvil-aks-ops",
+      "source": "anvil-aks-ops",
+      "description": "Evidence-first AKS operations agent. Safety gates, SQL-tracked verification, and mandatory confirmation for destructive Kubernetes cluster operations.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["ops", "aks", "kubernetes", "azure", "k8s", "operations", "verification"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
     }
   ]
 }

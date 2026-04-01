@@ -49,6 +49,22 @@ function validateCommand(cmd) {
     if (/connectedmachine\s+run-command\s+create\b/.test(cmd) && /--async-execution\b/.test(cmd)) return { reason: "--async-execution is blocked", decision: "deny" };
     if (/connectedmachine\s+run-command\s+create\b/.test(cmd)) return { reason: "run-command executes code on remote servers", decision: "ask" };
     if (/connectedmachine\s+private-endpoint-connection\s+delete\b/.test(cmd)) return { reason: "private endpoint deletion is blocked", decision: "deny" };
+    // AKS destructive operations (defense-in-depth — shell hooks are primary)
+    if (/az\s+aks\s+delete\b/.test(cmd)) return { reason: "az aks delete destroys the entire cluster", decision: "deny" };
+    if (/az\s+aks\s+rotate-certs\b/.test(cmd)) return { reason: "rotate-certs regenerates all cluster certificates and causes downtime", decision: "deny" };
+    if (/kubectl\s+delete\b/.test(cmd) && /\b(namespace|ns)\b/.test(cmd)) return { reason: "kubectl delete namespace destroys an entire namespace", decision: "deny" };
+    if (/kubectl\s+apply\s+(--filename|-f)\s+https?:\/\//.test(cmd)) return { reason: "applying manifests from remote URLs is blocked — download and review first", decision: "deny" };
+    if (/az\s+aks\s+stop\b/.test(cmd)) return { reason: "az aks stop takes the entire cluster offline", decision: "ask" };
+    if (/az\s+aks\s+nodepool\s+delete\b/.test(cmd)) return { reason: "nodepool delete evicts all pods and destroys nodes", decision: "ask" };
+    if (/az\s+aks\s+nodepool\s+scale\b/.test(cmd) && /--node-count[=\s]+0\b/.test(cmd)) return { reason: "scaling to 0 nodes evicts all workloads", decision: "ask" };
+    if (/az\s+aks\s+upgrade\b/.test(cmd) && !/--control-plane-only\b/.test(cmd)) return { reason: "full cluster upgrade cordons and drains all nodes", decision: "ask" };
+    if (/az\s+aks\s+nodepool\s+upgrade\b/.test(cmd)) return { reason: "nodepool upgrade cordons and drains nodes", decision: "ask" };
+    if (/az\s+aks\s+disable-addons\b/.test(cmd)) return { reason: "disabling addons removes cluster components", decision: "ask" };
+    if (/az\s+aks\s+get-credentials\b/.test(cmd) && /--admin\b/.test(cmd)) return { reason: "admin credentials bypass Azure AD RBAC", decision: "ask" };
+    if (/kubectl\s+delete\b/.test(cmd)) return { reason: "kubectl delete removes cluster resources", decision: "ask" };
+    if (/kubectl\s+drain\b/.test(cmd)) return { reason: "kubectl drain evicts all pods from a node", decision: "ask" };
+    if (/kubectl\s+exec\b/.test(cmd)) return { reason: "kubectl exec runs commands inside containers", decision: "ask" };
+    if (/kubectl\s+edit\b/.test(cmd)) return { reason: "kubectl edit modifies live cluster resources", decision: "ask" };
     // Git push to main/master
     if (/git\s+push\s.*\b(main|master)\b/i.test(cmd)) return { reason: "push to main/master — use a feature branch", decision: "ask" };
     return null;
@@ -82,6 +98,9 @@ const session = await joinSession({
                     "- anvil_ops_check: pre-flight Azure auth, subscription, and Arc CLI check",
                     "- anvil_ops_inventory: list Arc-enabled servers with filtering",
                     "- anvil_ops_preview: dry-run preview for Arc operations",
+                    "- anvil_aks_check: pre-flight Azure auth, kubectl, kubelogin, and AKS prerequisites",
+                    "- anvil_aks_inventory: list AKS clusters and node pools with health status",
+                    "- anvil_aks_preview: preview impact of AKS operations before execution",
                 ].join("\n"),
             };
         },
@@ -113,6 +132,16 @@ const session = await joinSession({
                 if (/az\s+connectedmachine\s+(extension\s+(create|delete|update)|upgrade-extension|run-command\s+create|install-patches)/.test(cmd)) {
                     return {
                         additionalContext: "Arc operation executed. Verify the result with anvil_ops_inventory or az connectedmachine show/extension show.",
+                    };
+                }
+                if (/az\s+aks\s+(nodepool\s+(scale|upgrade|add|delete|update|stop|start)|upgrade|update|stop|start|enable-addons|disable-addons)\b/.test(cmd)) {
+                    return {
+                        additionalContext: "AKS operation executed. Verify the result with anvil_aks_inventory, az aks show, or kubectl get nodes.",
+                    };
+                }
+                if (/kubectl\s+(apply|delete|scale|drain|cordon|uncordon|rollout|taint)\b/.test(cmd)) {
+                    return {
+                        additionalContext: "kubectl operation executed. Verify with kubectl get to confirm the expected state.",
                     };
                 }
             }
@@ -543,6 +572,221 @@ const session = await joinSession({
                     preview_type: "unsupported",
                     note: "No preview available for this command. Review the command manually before execution.",
                     original_command: cmd,
+                }, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // AKS-specific tools (Azure Kubernetes Service)
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_aks_check",
+            description: "Pre-flight check for AKS operations: verify Azure auth, kubectl, kubelogin, aks-preview extension, and current kubeconfig context. Run before starting any AKS operations task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug (e.g., upgrade-aks-prod)" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const [account, kubectl, kubelogin, aksExt, context] = await Promise.all([
+                    shell("az", ["account", "show", "--query", "{name:name, id:id, tenantId:tenantId}", "-o", "json"]),
+                    shell("kubectl", ["version", "--client", "-o", "json"]),
+                    shell("kubelogin", ["--version"]),
+                    shell("az", ["extension", "show", "--name", "aks-preview", "--query", "version", "-o", "tsv"]),
+                    shell("kubectl", ["config", "current-context"]),
+                ]);
+
+                let subscription = null;
+                if (account.ok) {
+                    try { subscription = JSON.parse(account.stdout); }
+                    catch { subscription = { error: "Failed to parse az output", raw: (account.stdout || "").slice(0, 200) }; }
+                }
+
+                let kubectlVersion = null;
+                if (kubectl.ok) {
+                    try { kubectlVersion = JSON.parse(kubectl.stdout)?.clientVersion?.gitVersion || kubectl.stdout; }
+                    catch { kubectlVersion = kubectl.stdout; }
+                }
+
+                const report = {
+                    authenticated: account.ok,
+                    subscription,
+                    kubectl: kubectlVersion || "not installed",
+                    kubelogin: kubelogin.ok ? kubelogin.stdout.split("\n")[0] : "not installed",
+                    aks_preview_ext: aksExt.ok ? aksExt.stdout : "not installed",
+                    kube_context: context.ok ? context.stdout : "none",
+                    task_id: args.task_id,
+                };
+
+                const warnings = [];
+                if (!account.ok) warnings.push("❌ Not authenticated — run 'az login' first");
+                if (!kubectl.ok) warnings.push("❌ kubectl not installed");
+                if (!kubelogin.ok) warnings.push("⚠️ kubelogin not installed — AAD auth will not work");
+                if (!aksExt.ok) warnings.push("ℹ️ aks-preview CLI extension not installed (optional)");
+                if (!context.ok) warnings.push("⚠️ No kubeconfig context set — run 'az aks get-credentials' first");
+                if (warnings.length === 0) warnings.push("✅ Azure auth, kubectl, and AKS tooling ready");
+
+                return JSON.stringify({ ...report, warnings }, null, 2);
+            },
+        },
+        {
+            name: "anvil_aks_inventory",
+            description: "List AKS clusters and node pools with health status. Provide cluster and resource_group for a single cluster detail, or omit for a list of all clusters.",
+            parameters: {
+                type: "object",
+                properties: {
+                    resource_group: { type: "string", description: "Azure resource group name (optional — lists all if omitted)" },
+                    cluster: { type: "string", description: "AKS cluster name (optional — requires resource_group)" },
+                    include_nodepools: { type: "boolean", description: "Include node pool details (default: true)" },
+                },
+            },
+            handler: async (args) => {
+                const includeNodepools = args.include_nodepools !== false;
+
+                // Single cluster detail mode
+                if (args.cluster && args.resource_group) {
+                    const calls = [
+                        shell("az", ["aks", "show", "--name", args.cluster, "--resource-group", args.resource_group,
+                            "--query", "{name:name, resourceGroup:resourceGroup, kubernetesVersion:kubernetesVersion, provisioningState:provisioningState, powerState:powerState.code, fqdn:fqdn, nodeResourceGroup:nodeResourceGroup, location:location}",
+                            "-o", "json"]),
+                    ];
+                    if (includeNodepools) {
+                        calls.push(shell("az", ["aks", "nodepool", "list", "--cluster-name", args.cluster, "--resource-group", args.resource_group,
+                            "--query", "[].{name:name, vmSize:vmSize, count:count, mode:mode, provisioningState:provisioningState, powerState:powerState.code, orchestratorVersion:currentOrchestratorVersion, osType:osType, minCount:minCount, maxCount:maxCount, enableAutoScaling:enableAutoScaling}",
+                            "-o", "json"]));
+                    }
+                    const results = await Promise.all(calls);
+                    const clusterResult = results[0];
+                    if (!clusterResult.ok) {
+                        return JSON.stringify({ error: clusterResult.stderr || "Failed to get cluster", exit_code: clusterResult.code });
+                    }
+                    let cluster;
+                    try { cluster = JSON.parse(clusterResult.stdout); }
+                    catch { return JSON.stringify({ error: "Failed to parse cluster output", raw: (clusterResult.stdout || "").slice(0, 500) }); }
+
+                    let nodepools = null;
+                    if (includeNodepools && results[1]) {
+                        if (results[1].ok) {
+                            try { nodepools = JSON.parse(results[1].stdout || "[]"); }
+                            catch { nodepools = { error: "Failed to parse nodepool output" }; }
+                        } else {
+                            nodepools = { error: results[1].stderr || "Failed to list node pools" };
+                        }
+                    }
+
+                    return JSON.stringify({ cluster, nodepools }, null, 2);
+                }
+
+                // List mode
+                const azArgs = ["aks", "list"];
+                if (args.resource_group) {
+                    azArgs.push("--resource-group", args.resource_group);
+                }
+                azArgs.push("--query", "[].{name:name, resourceGroup:resourceGroup, kubernetesVersion:kubernetesVersion, provisioningState:provisioningState, powerState:powerState.code, location:location}");
+                azArgs.push("-o", "json");
+
+                const result = await shell("az", azArgs);
+                if (!result.ok) {
+                    return JSON.stringify({ error: result.stderr || "Failed to list clusters", exit_code: result.code });
+                }
+
+                let clusters;
+                try { clusters = JSON.parse(result.stdout || "[]"); }
+                catch { return JSON.stringify({ error: "Failed to parse az output", raw: (result.stdout || "").slice(0, 500) }); }
+
+                return JSON.stringify({
+                    total: clusters.length,
+                    resource_group: args.resource_group || "(all)",
+                    clusters,
+                }, null, 2);
+            },
+        },
+        {
+            name: "anvil_aks_preview",
+            description: "Preview impact of AKS operations before execution. Validates the command, checks guardrails, and gathers current state to show what would change.",
+            parameters: {
+                type: "object",
+                properties: {
+                    command: { type: "string", description: "The az aks or kubectl command to preview" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                    cluster: { type: "string", description: "AKS cluster name (optional — helps gather context)" },
+                    resource_group: { type: "string", description: "Azure resource group (optional)" },
+                },
+                required: ["command", "task_id"],
+            },
+            handler: async (args) => {
+                const cmd = args.command;
+
+                // Validate: must be an az aks or kubectl command
+                if (!/^\s*(az\s+aks|kubectl)\b/.test(cmd)) {
+                    return JSON.stringify({ error: "anvil_aks_preview only accepts 'az aks' or 'kubectl' commands." });
+                }
+
+                // Centralized guardrails
+                const blocked = validateCommand(cmd);
+                if (blocked && blocked.decision === "deny") {
+                    return JSON.stringify({ error: `🔨 Anvil blocked: ${blocked.reason}`, passed: 0 });
+                }
+
+                const rg = args.resource_group;
+                const cluster = args.cluster;
+
+                // Upgrade preview: show available upgrades + current version
+                if (/az\s+aks\s+(upgrade|nodepool\s+upgrade)\b/.test(cmd) && rg && cluster) {
+                    const [upgrades, show] = await Promise.all([
+                        shell("az", ["aks", "get-upgrades", "--name", cluster, "--resource-group", rg, "-o", "json"]),
+                        shell("az", ["aks", "show", "--name", cluster, "--resource-group", rg,
+                            "--query", "{name:name, kubernetesVersion:kubernetesVersion, provisioningState:provisioningState, powerState:powerState.code}",
+                            "-o", "json"]),
+                    ]);
+                    const output = JSON.stringify({
+                        available_upgrades: upgrades.ok ? (upgrades.stdout || "").slice(0, 1500) : upgrades.stderr,
+                        current_state: show.ok ? (show.stdout || "").slice(0, 500) : show.stderr,
+                    });
+                    return JSON.stringify({
+                        preview_type: "upgrade",
+                        original_command: cmd,
+                        guardrail: blocked ? `⚠️ ${blocked.reason} (decision: ${blocked.decision})` : "✅ passed",
+                        output,
+                        sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'aks-preview', 'anvil_aks_preview', '${sqlEscape(cmd)}', 0, '${sqlEscape(output.slice(0, 500))}', 1);`,
+                    }, null, 2);
+                }
+
+                // Scale preview: show current node pool state
+                if (/az\s+aks\s+nodepool\s+scale\b/.test(cmd) && rg && cluster) {
+                    const pools = await shell("az", ["aks", "nodepool", "list", "--cluster-name", cluster, "--resource-group", rg,
+                        "--query", "[].{name:name, count:count, vmSize:vmSize, minCount:minCount, maxCount:maxCount, enableAutoScaling:enableAutoScaling, powerState:powerState.code}",
+                        "-o", "json"]);
+                    const output = pools.ok ? (pools.stdout || "").slice(0, 1500) : pools.stderr;
+                    return JSON.stringify({
+                        preview_type: "scale",
+                        original_command: cmd,
+                        guardrail: blocked ? `⚠️ ${blocked.reason} (decision: ${blocked.decision})` : "✅ passed",
+                        current_nodepools: output,
+                        sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'aks-preview', 'anvil_aks_preview', '${sqlEscape(cmd)}', 0, '${sqlEscape(String(output).slice(0, 500))}', 1);`,
+                    }, null, 2);
+                }
+
+                // Default: show cluster state
+                if (rg && cluster) {
+                    const show = await shell("az", ["aks", "show", "--name", cluster, "--resource-group", rg, "-o", "json"]);
+                    const output = show.ok ? (show.stdout || "").slice(0, 1500) : show.stderr;
+                    return JSON.stringify({
+                        preview_type: "current-state",
+                        original_command: cmd,
+                        guardrail: blocked ? `⚠️ ${blocked.reason} (decision: ${blocked.decision})` : "✅ passed",
+                        output,
+                        sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'aks-preview', 'anvil_aks_preview', '${sqlEscape(cmd)}', 0, '${sqlEscape(String(output).slice(0, 500))}', 1);`,
+                    }, null, 2);
+                }
+
+                return JSON.stringify({
+                    preview_type: "no-context",
+                    original_command: cmd,
+                    guardrail: blocked ? `⚠️ ${blocked.reason} (decision: ${blocked.decision})` : "✅ passed",
+                    note: "Provide cluster and resource_group for a detailed preview.",
                 }, null, 2);
             },
         },

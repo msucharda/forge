@@ -12,6 +12,7 @@ This repository is a **marketplace** — install individual agent plugins or eve
 | **anvil-code** | General-purpose coding agent with adversarial review | Install if you write application code |
 | **anvil-bicep** | Azure Bicep infrastructure agent with AVM modules | Install if you work with Azure Bicep |
 | **anvil-arc-ops** | Azure Arc operations agent with safety gates | Install if you manage Arc-enabled servers |
+| **anvil-aks-ops** | AKS operations agent with safety gates | Install if you manage AKS clusters |
 
 ## Install
 
@@ -82,15 +83,15 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
 │  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs     │
 └────────┬──────────────┬──────────────┬──────────────┬─────────────┘
          │              │              │              │
-   ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐
-   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │anvil-arc-│ │Extension │
-   │            │ │            │ │            │ │  ops     │ │          │
-   │ /verify    │ │ agent.md   │ │ agent.md   │ │ agent.md │ │ Tools:   │
-   │ /evidence  │ │            │ │            │ │ ops-     │ │ git_check│
-   │ guardrails │ │            │ │            │ │ guardrail│ │ verify   │
-   └────────────┘ └────────────┘ └────────────┘ └──────────┘ │ bicep_*  │
-                                                              │ ops_*    │
-                                                              └──────────┘
+   ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐ ┌────▼─────┐
+   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │anvil-arc-│ │anvil-aks-│ │Extension│
+   │            │ │            │ │            │ │  ops     │ │  ops     │ │         │
+   │ /verify    │ │ agent.md   │ │ agent.md   │ │ agent.md │ │ agent.md │ │ Tools:  │
+   │ /evidence  │ │            │ │            │ │ ops-     │ │ aks-     │ │ git_*   │
+   │ guardrails │ │            │ │            │ │ guardrail│ │ guardrail│ │ bicep_* │
+   └────────────┘ └────────────┘ └────────────┘ └──────────┘ └──────────┘ │ ops_*   │
+                                                                           │ aks_*   │
+                                                                           └─────────┘
 ```
 
 ## What Gets Installed
@@ -100,7 +101,8 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
 ├── agents/                          ← Copilot CLI agent discovery (/agent)
 │   ├── anvil-code.agent.md
 │   ├── anvil-bicep.agent.md
-│   └── anvil-arc-ops.agent.md
+│   ├── anvil-arc-ops.agent.md
+│   └── anvil-aks-ops.agent.md
 └── extensions/
     └── anvil/
         ├── extension.mjs            ← Runtime — tools and hooks
@@ -127,6 +129,12 @@ The extension registers these tools, available in every Copilot CLI session:
 | `anvil_bicep_lint` | Run `az bicep lint` with structured output |
 | `anvil_bicep_build` | Compile Bicep to ARM template, report errors |
 | `anvil_bicep_param_check` | Cross-reference `.bicep` params vs `.bicepparam` files |
+| `anvil_ops_check` | Pre-flight Azure auth, subscription, and Arc CLI check |
+| `anvil_ops_inventory` | List Arc-enabled servers with filtering |
+| `anvil_ops_preview` | Dry-run preview for Arc operations |
+| `anvil_aks_check` | Pre-flight Azure auth, kubectl, kubelogin, and AKS prerequisites |
+| `anvil_aks_inventory` | List AKS clusters and node pools with health status |
+| `anvil_aks_preview` | Preview impact of AKS operations before execution |
 
 ## Commands
 
