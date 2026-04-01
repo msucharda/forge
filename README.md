@@ -31,12 +31,6 @@ This places:
 
 Reload Copilot CLI with `/clear`, then pick an anvil with `/agent`.
 
-### Install a single anvil
-
-```bash
-copilot plugin install msucharda/forge --plugin anvil-bicep
-```
-
 ## Update
 
 ```bash

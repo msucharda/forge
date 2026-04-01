@@ -57,13 +57,6 @@ lint-plugins:
 				(printf "\033[0;31m✖\033[0m $$f missing frontmatter\n" && exit 1); \
 		fi; \
 	done && printf "\033[0;32m✔\033[0m All plugin markdown files have frontmatter\n"
-	@for hj in plugins/*/hooks.json; do \
-		if [ -f "$$hj" ]; then \
-			node -e "JSON.parse(require('fs').readFileSync('$$hj','utf-8'))" 2>/dev/null && \
-				printf "\033[0;32m✔\033[0m $$hj is valid JSON\n" || \
-				(printf "\033[0;31m✖\033[0m $$hj is not valid JSON\n" && exit 1); \
-		fi; \
-	done
 
 ## test — Placeholder for future tests
 test: lint

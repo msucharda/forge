@@ -5,6 +5,5 @@
   "author": { "name": "msucharda" },
   "license": "MIT",
   "keywords": ["ops", "aks", "kubernetes", "azure", "k8s", "operations"],
-  "agents": "agents/",
-  "hooks": "hooks.json"
+  "agents": "agents/"
 }

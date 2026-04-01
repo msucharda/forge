@@ -5,6 +5,5 @@
   "author": { "name": "msucharda" },
   "license": "MIT",
   "keywords": ["ops", "arc", "azure", "connectedmachine", "operations"],
-  "agents": "agents/",
-  "hooks": "hooks.json"
+  "agents": "agents/"
 }
