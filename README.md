@@ -2,45 +2,47 @@
 
 *Where anvils are made.*
 
-Forge is a plugin marketplace for [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) that ships **evidence-first coding agents**. Each agent — called an **anvil** — verifies its own output with adversarial multi-model review, tracks every check in a SQL ledger, and refuses to present results until the evidence passes.
-
-Install one anvil or all of them.
+Forge ships **evidence-first coding agents** for [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli). Each agent — called an **anvil** — verifies its own output with adversarial multi-model review, tracks every check in a SQL ledger, and refuses to present results until the evidence passes.
 
 ## Anvils
 
 | Anvil | What it does |
 |-------|-------------|
-| **anvil-core** | Shared `/verify` and `/evidence` commands, guardrail hooks |
 | **anvil-code** | General-purpose coding with adversarial self-review |
 | **anvil-bicep** | Azure Bicep IaC — AVM modules, linting, ARM validation |
 | **anvil-arc-ops** | Azure Arc server operations with safety gates |
 | **anvil-aks-ops** | AKS cluster operations with safety gates |
 | **anvil-architect** | Azure architecture design with WAF compliance and cost estimation |
 
-## Quick start
+## Install
+
+### Linux / macOS
 
 ```bash
 git clone https://github.com/msucharda/forge.git
 cd forge
-make install        # installs all anvils + the extension runtime
+make install
+```
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/msucharda/forge.git
+cd forge
+.\install.ps1
 ```
 
 This places:
 - **Agents** in `~/.copilot/agents/` (discoverable via `/agent`)
-- **Extension** (tools & hooks) in `~/.copilot/extensions/anvil/`
+- **Extension** (tools + guardrails) in `~/.copilot/extensions/anvil/`
 
 Reload Copilot CLI with `/clear`, then pick an anvil with `/agent`.
-
-### Install a single anvil
-
-```bash
-copilot plugin install msucharda/forge --plugin anvil-bicep
-```
 
 ## Update
 
 ```bash
-cd forge && git pull && make install
+cd forge && git pull && make install        # Linux/macOS
+cd forge; git pull; .\install.ps1           # Windows
 ```
 
 The installer detects existing files and backs up any agent files you've customized.
@@ -61,16 +63,13 @@ make uninstall
 │  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs       │
 └──┬───────┬───────┬───────┬───────┬───────┬───────────────────────── ┘
    │       │       │       │       │       │
- ┌─▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼────────┐  ┌──────────┐
- │ core  ││ code ││bicep ││arc-  ││aks-  ││architect│  │Extension │
- │       ││      ││      ││ ops  ││ ops  ││         │  │ Tools    │
- │/verify││      ││      ││      ││      ││         │  │          │
- │/evid. ││      ││      ││      ││      ││         │  │ git_*    │
- │guard- ││      ││      ││      ││      ││         │  │ bicep_*  │
- │ rails ││      ││      ││      ││      ││         │  │ ops_*    │
- └───────┘└──────┘└──────┘└──────┘└──────┘└─────────┘  │ aks_*    │
-                                                         │ arch_*   │
-                                                         └──────────┘
+ ┌─▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼────────┐
+ │ code  ││bicep ││arc-  ││aks-  ││archi-││Extension │
+ │       ││      ││ ops  ││ ops  ││ tect ││ Runtime  │
+ │agent  ││agent ││agent ││agent ││agent ││          │
+ │ .md   ││ .md  ││ .md  ││ .md  ││ .md  ││ Tools +  │
+ └───────┘└──────┘└──────┘└──────┘└──────┘│Guardrails│
+                                           └──────────┘
 ```
 
 Every anvil follows the same discipline:
@@ -111,31 +110,25 @@ $EDITOR ~/.copilot/agents/anvil-code.agent.md
 
 ### Create a new anvil
 
-```bash
-mkdir -p plugins/anvil-terraform/agents
-# Add plugin.json + agent file
-# Register in .github/plugin/marketplace.json
-make lint && make install
-```
-
-### Agent file format
+Drop a `.agent.md` file into `.github/agents/`:
 
 ```markdown
 ---
-name: anvil-name
-description: One-liner shown in agent listings
+name: anvil-terraform
+description: Evidence-first Terraform agent
 ---
 
-# Agent Title
+# Terraform Agent
 
-Behavioral instructions in markdown…
+Behavioral instructions…
 ```
+
+Then run `make install` (or `.\install.ps1`) to deploy it.
 
 ## Development
 
 ```bash
-make lint          # Check extension syntax + all plugin files
-make lint-plugins  # Check only plugins
+make lint          # Check extension syntax + agent frontmatter
 make test          # Lint (no test suite yet)
 make install       # Install from local clone
 ```

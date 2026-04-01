@@ -1,9 +1,0 @@
-{
-  "name": "anvil-core",
-  "description": "Shared Anvil tools and commands — verification ledger, evidence bundles, git hygiene, and guardrails.",
-  "version": "1.3.0",
-  "author": { "name": "msucharda" },
-  "license": "MIT",
-  "keywords": ["verification", "evidence", "guardrails"],
-  "hooks": "hooks.json"
-}

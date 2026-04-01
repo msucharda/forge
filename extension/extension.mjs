@@ -54,15 +54,17 @@ function validateCommand(cmd) {
     if (/az\s+aks\s+rotate-certs\b/.test(cmd)) return { reason: "rotate-certs regenerates all cluster certificates and causes downtime", decision: "deny" };
     if (/kubectl\s+delete\b/.test(cmd) && /\b(namespace|ns)\b/.test(cmd)) return { reason: "kubectl delete namespace destroys an entire namespace", decision: "deny" };
     if (/kubectl\s+apply\s+(--filename|-f)\s+https?:\/\//.test(cmd)) return { reason: "applying manifests from remote URLs is blocked — download and review first", decision: "deny" };
+    if (/az\s+aks\s+(delete|stop)\b/.test(cmd) && /(\s--yes|\s-y)(\s|$)/.test(cmd)) return { reason: "auto-confirm flag with destructive az aks command is blocked", decision: "deny" };
     if (/az\s+aks\s+stop\b/.test(cmd)) return { reason: "az aks stop takes the entire cluster offline", decision: "ask" };
     if (/az\s+aks\s+nodepool\s+delete\b/.test(cmd)) return { reason: "nodepool delete evicts all pods and destroys nodes", decision: "ask" };
-    if (/az\s+aks\s+nodepool\s+scale\b/.test(cmd) && /--node-count[=\s]+0\b/.test(cmd)) return { reason: "scaling to 0 nodes evicts all workloads", decision: "ask" };
-    if (/az\s+aks\s+upgrade\b/.test(cmd) && !/--control-plane-only\b/.test(cmd)) return { reason: "full cluster upgrade cordons and drains all nodes", decision: "ask" };
+    if (/az\s+aks\s+nodepool\s+scale\b/.test(cmd)) return { reason: /--node-count[=\s]+0\b/.test(cmd) ? "scaling to 0 nodes evicts all workloads" : "nodepool scale changes node count", decision: "ask" };
+    if (/az\s+aks\s+upgrade\b/.test(cmd)) return { reason: /--control-plane-only\b/.test(cmd) ? "control-plane-only upgrade" : "full cluster upgrade cordons and drains all nodes", decision: "ask" };
     if (/az\s+aks\s+nodepool\s+upgrade\b/.test(cmd)) return { reason: "nodepool upgrade cordons and drains nodes", decision: "ask" };
     if (/az\s+aks\s+disable-addons\b/.test(cmd)) return { reason: "disabling addons removes cluster components", decision: "ask" };
     if (/az\s+aks\s+get-credentials\b/.test(cmd) && /--admin\b/.test(cmd)) return { reason: "admin credentials bypass Azure AD RBAC", decision: "ask" };
     if (/kubectl\s+delete\b/.test(cmd)) return { reason: "kubectl delete removes cluster resources", decision: "ask" };
     if (/kubectl\s+drain\b/.test(cmd)) return { reason: "kubectl drain evicts all pods from a node", decision: "ask" };
+    if (/kubectl\s+scale\b/.test(cmd) && /--replicas[=\s]+0\b/.test(cmd)) return { reason: "kubectl scale --replicas=0 shuts down the workload entirely", decision: "ask" };
     if (/kubectl\s+exec\b/.test(cmd)) return { reason: "kubectl exec runs commands inside containers", decision: "ask" };
     if (/kubectl\s+edit\b/.test(cmd)) return { reason: "kubectl edit modifies live cluster resources", decision: "ask" };
     // Git push to main/master

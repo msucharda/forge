@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# Anvil — Install / Update script
+# Forge — Install / Update script
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/anvil/main/install.sh | bash
-#   OR: git clone ... && cd anvil && bash install.sh
+#   curl -fsSL https://raw.githubusercontent.com/msucharda/forge/main/install.sh | bash
+#   OR: git clone ... && cd forge && bash install.sh
 
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-REPO_URL="${ANVIL_REPO_URL:-https://github.com/msucharda/forge.git}"
+REPO_URL="${FORGE_REPO_URL:-https://github.com/msucharda/forge.git}"
 INSTALL_DIR="${HOME}/.copilot/extensions/anvil"
 AGENTS_DIR="${HOME}/.copilot/agents"
 BACKUP_DIR="${HOME}/.copilot/extensions/.anvil-backup"
@@ -36,14 +32,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Portable checksum function (macOS has shasum, Linux has sha256sum)
 file_hash() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | cut -d' ' -f1
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" | cut -d' ' -f1
     else
-        # Fallback: openssl (available on both platforms)
         openssl dgst -sha256 "$1" | awk '{print $NF}'
     fi
 }
@@ -55,12 +49,10 @@ file_hash() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SOURCE_DIR=""
 
-if [ -f "${SCRIPT_DIR}/extension/extension.mjs" ] && [ -d "${SCRIPT_DIR}/plugins" ]; then
-    # Running from a local clone
+if [ -f "${SCRIPT_DIR}/extension/extension.mjs" ] && [ -d "${SCRIPT_DIR}/.github/agents" ]; then
     SOURCE_DIR="${SCRIPT_DIR}"
     info "Installing from local clone: ${SOURCE_DIR}"
 else
-    # Running from curl pipe — clone to temp
     command -v git >/dev/null 2>&1 || die "git is required but not installed"
     TMP_DIR="$(mktemp -d)"
     info "Cloning ${REPO_URL}..."
@@ -69,13 +61,22 @@ else
     info "Cloned to temporary directory"
 fi
 
-# Verify source has required files
 [ -f "${SOURCE_DIR}/extension/extension.mjs" ] || die "extension/extension.mjs not found in source"
-[ -d "${SOURCE_DIR}/plugins" ] || die "plugins/ directory not found in source"
+[ -d "${SOURCE_DIR}/.github/agents" ] || die ".github/agents/ directory not found in source"
 [ -f "${SOURCE_DIR}/plugin.json" ] || die "plugin.json not found in source"
-[ -f "${SOURCE_DIR}/version.txt" ] || die "version.txt not found in source"
 
-NEW_VERSION="$(cat "${SOURCE_DIR}/version.txt" | tr -d '[:space:]')"
+# Get source version from git SHA (falls back to file hash of extension.mjs)
+if git -C "${SOURCE_DIR}" rev-parse HEAD >/dev/null 2>&1; then
+    NEW_VERSION="$(git -C "${SOURCE_DIR}" rev-parse --short HEAD)"
+    NEW_VERSION_FULL="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
+    # Include tag if available
+    NEW_TAG="$(git -C "${SOURCE_DIR}" describe --tags --exact-match 2>/dev/null || true)"
+else
+    NEW_VERSION="$(file_hash "${SOURCE_DIR}/extension/extension.mjs" | cut -c1-12)"
+    NEW_VERSION_FULL="${NEW_VERSION}"
+    NEW_TAG=""
+fi
+DISPLAY_VERSION="${NEW_TAG:-${NEW_VERSION}}"
 
 # ---------------------------------------------------------------------------
 # Check existing installation
@@ -86,23 +87,24 @@ OLD_VERSION=""
 
 if [ -d "${INSTALL_DIR}" ] && [ -f "${INSTALL_DIR}/extension.mjs" ]; then
     IS_UPDATE=true
-    if [ -f "${INSTALL_DIR}/version.txt" ]; then
-        OLD_VERSION="$(cat "${INSTALL_DIR}/version.txt" | tr -d '[:space:]')"
+    if [ -f "${INSTALL_DIR}/.installed-sha" ]; then
+        OLD_VERSION="$(cat "${INSTALL_DIR}/.installed-sha" | tr -d '[:space:]')"
     fi
 
-    if [ "${OLD_VERSION}" = "${NEW_VERSION}" ]; then
-        ok "Anvil v${NEW_VERSION} is already installed and up to date"
+    if [ "${OLD_VERSION}" = "${NEW_VERSION_FULL}" ]; then
+        ok "Forge (${DISPLAY_VERSION}) is already installed and up to date"
         printf "  ${BOLD}Location${NC}: ${INSTALL_DIR}\n"
         exit 0
     fi
 
-    info "Updating Anvil: v${OLD_VERSION:-unknown} → v${NEW_VERSION}"
+    OLD_DISPLAY="${OLD_VERSION:0:7}"
+    info "Updating Forge: ${OLD_DISPLAY:-unknown} → ${DISPLAY_VERSION}"
 else
-    info "Installing Anvil v${NEW_VERSION}"
+    info "Installing Forge (${DISPLAY_VERSION})"
 fi
 
 # ---------------------------------------------------------------------------
-# Backup user-modified agent files (check ~/.copilot/agents/)
+# Backup user-modified agent files
 # ---------------------------------------------------------------------------
 
 if [ "${IS_UPDATE}" = true ] && [ -d "${AGENTS_DIR}" ]; then
@@ -113,25 +115,14 @@ if [ "${IS_UPDATE}" = true ] && [ -d "${AGENTS_DIR}" ]; then
         [ -f "${agent_file}" ] || continue
         base="$(basename "${agent_file}")"
 
-        # Find matching source file in plugins/*/agents/
-        source_file=""
-        for plugin_dir in "${SOURCE_DIR}/plugins/"*/agents; do
-            [ -d "${plugin_dir}" ] || continue
-            if [ -f "${plugin_dir}/${base}" ]; then
-                source_file="${plugin_dir}/${base}"
-                break
-            fi
-        done
-
-        if [ -n "${source_file}" ]; then
+        if [ -f "${SOURCE_DIR}/.github/agents/${base}" ]; then
             installed_hash="$(file_hash "${agent_file}")"
-            source_hash="$(file_hash "${source_file}")"
+            source_hash="$(file_hash "${SOURCE_DIR}/.github/agents/${base}")"
             if [ "${installed_hash}" != "${source_hash}" ]; then
                 cp "${agent_file}" "${BACKUP_DIR}/${base}.bak"
                 warn "Backed up modified agent: ${base} → ${BACKUP_DIR}/${base}.bak"
             fi
         else
-            # User-created agent — back it up
             cp "${agent_file}" "${BACKUP_DIR}/${base}.bak"
             warn "Backed up custom agent: ${base} → ${BACKUP_DIR}/${base}.bak"
         fi
@@ -139,67 +130,50 @@ if [ "${IS_UPDATE}" = true ] && [ -d "${AGENTS_DIR}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Migrate: clean old agent/skill files from extensions directory
+# Migrate: clean old plugin-based layout
 # ---------------------------------------------------------------------------
 
 if [ "${IS_UPDATE}" = true ]; then
-    rm -f "${INSTALL_DIR}/agents/"*.agent.md 2>/dev/null || true
+    rm -rf "${INSTALL_DIR}/plugins" 2>/dev/null || true
+    rm -rf "${INSTALL_DIR}/commands" 2>/dev/null || true
+    rm -rf "${INSTALL_DIR}/agents" 2>/dev/null || true
     rm -rf "${INSTALL_DIR}/skills" 2>/dev/null || true
-    rmdir "${INSTALL_DIR}/agents" 2>/dev/null || true
+    rm -f "${INSTALL_DIR}/version.txt" 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
-mkdir -p "${INSTALL_DIR}/plugins" "${AGENTS_DIR}"
+mkdir -p "${INSTALL_DIR}" "${AGENTS_DIR}"
 
-# Copy extension (tools & hooks)
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
 ok "Installed extension.mjs"
 
-# Copy plugin manifest
 cp "${SOURCE_DIR}/plugin.json" "${INSTALL_DIR}/plugin.json"
 ok "Installed plugin.json"
 
-# Copy plugins directory (source of truth for packaging)
-rm -rf "${INSTALL_DIR}/plugins"
-cp -r "${SOURCE_DIR}/plugins" "${INSTALL_DIR}/plugins"
-plugin_count=$(ls -d "${INSTALL_DIR}/plugins/"*/ 2>/dev/null | wc -l)
-ok "Installed ${plugin_count} plugin(s)"
-
-# Install agents to ~/.copilot/agents/ (Copilot CLI discovery path for /agent)
-for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
-    [ -d "${plugin_agents}" ] || continue
-    cp "${plugin_agents}/"*.agent.md "${AGENTS_DIR}/" 2>/dev/null || true
-done
+agent_sources=$(ls -1 "${SOURCE_DIR}/.github/agents/"*.agent.md 2>/dev/null | wc -l)
+if [ "${agent_sources}" -eq 0 ]; then
+    die "No agent files found in ${SOURCE_DIR}/.github/agents/"
+fi
+cp "${SOURCE_DIR}/.github/agents/"*.agent.md "${AGENTS_DIR}/"
 agent_count=$(ls -1 "${AGENTS_DIR}/"anvil-*.agent.md 2>/dev/null | wc -l)
 ok "Installed ${agent_count} agent(s) to ${AGENTS_DIR}/"
 
-# Restore user-created agents (agents that exist in backup but not in source)
+# Restore user-created agents
 if [ -d "${BACKUP_DIR}" ]; then
     for bak_file in "${BACKUP_DIR}/"*.agent.md.bak; do
         [ -f "${bak_file}" ] || continue
         original_name="$(basename "${bak_file}" .bak)"
-
-        # Check if this agent exists in any plugin
-        found=false
-        for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
-            if [ -f "${plugin_agents}/${original_name}" ]; then
-                found=true
-                break
-            fi
-        done
-
-        if [ "${found}" = false ]; then
+        if [ ! -f "${SOURCE_DIR}/.github/agents/${original_name}" ]; then
             cp "${bak_file}" "${AGENTS_DIR}/${original_name}"
             ok "Restored custom agent: ${original_name}"
         fi
     done
 fi
 
-# Copy version
-cp "${SOURCE_DIR}/version.txt" "${INSTALL_DIR}/version.txt"
+printf '%s\n' "${NEW_VERSION_FULL}" > "${INSTALL_DIR}/.installed-sha"
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -207,14 +181,13 @@ cp "${SOURCE_DIR}/version.txt" "${INSTALL_DIR}/version.txt"
 
 printf "\n"
 if [ "${IS_UPDATE}" = true ]; then
-    ok "${BOLD}Anvil updated to v${NEW_VERSION}${NC}"
+    ok "${BOLD}Forge updated (${DISPLAY_VERSION})${NC}"
 else
-    ok "${BOLD}Anvil v${NEW_VERSION} installed${NC}"
+    ok "${BOLD}Forge installed (${DISPLAY_VERSION})${NC}"
 fi
 printf "\n"
 printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
 printf "  ${BOLD}Agents${NC}:     ${AGENTS_DIR}/\n"
-printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
 printf "\n"
 
 if [ -d "${BACKUP_DIR}" ] && [ "$(ls -A "${BACKUP_DIR}" 2>/dev/null)" ]; then
@@ -229,8 +202,7 @@ printf "  2. Select an agent:        ${BLUE}/agent${NC}\n"
 printf "\n"
 printf "  ${BOLD}Customize agents${NC}:\n"
 printf "  Edit files in ${AGENTS_DIR}/ — changes take effect on next /clear\n"
-printf "  Add new agents: drop a .agent.md file in ${AGENTS_DIR}/\n"
 printf "\n"
 printf "  ${BOLD}Uninstall${NC}:\n"
-printf "  make uninstall   (or run manually — see README)\n"
+printf "  make uninstall   (or: rm -rf ${INSTALL_DIR} ${AGENTS_DIR}/anvil-*.agent.md)\n"
 printf "\n"
