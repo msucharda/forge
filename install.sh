@@ -10,7 +10,7 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 
-REPO_URL="${ANVIL_REPO_URL:-https://github.com/msucharda/anvil.git}"
+REPO_URL="${ANVIL_REPO_URL:-https://github.com/msucharda/forge.git}"
 INSTALL_DIR="${HOME}/.copilot/extensions/anvil"
 AGENTS_DIR="${HOME}/.copilot/agents"
 BACKUP_DIR="${HOME}/.copilot/extensions/.anvil-backup"
