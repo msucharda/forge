@@ -45,8 +45,7 @@ try {
     # Verify source
     $requiredFiles = @(
         (Join-Path $SourceDir 'extension' 'extension.mjs'),
-        (Join-Path $SourceDir 'plugin.json'),
-        (Join-Path $SourceDir 'version.txt')
+        (Join-Path $SourceDir 'plugin.json')
     )
     foreach ($f in $requiredFiles) {
         if (-not (Test-Path $f)) { Stop-WithError "$f not found in source" }
@@ -55,7 +54,21 @@ try {
         Stop-WithError '.github/agents/ directory not found in source'
     }
 
-    $NewVersion = (Get-Content (Join-Path $SourceDir 'version.txt') -Raw).Trim()
+    # Get source version from git SHA (falls back to file hash)
+    $NewVersionFull = $null
+    $NewTag = $null
+    try {
+        $gitResult = git -C $SourceDir rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gitResult) {
+            $NewVersionFull = $gitResult.Trim()
+            try { $NewTag = (git -C $SourceDir describe --tags --exact-match 2>$null).Trim() } catch {}
+        }
+    } catch {}
+    if (-not $NewVersionFull) {
+        $NewVersionFull = (Get-FileHash (Join-Path $SourceDir 'extension' 'extension.mjs') -Algorithm SHA256).Hash.Substring(0, 12)
+    }
+    $NewVersionShort = $NewVersionFull.Substring(0, [Math]::Min(7, $NewVersionFull.Length))
+    $DisplayVersion = if ($NewTag) { $NewTag } else { $NewVersionShort }
 
     # -----------------------------------------------------------------------
     # Check existing installation
@@ -65,21 +78,21 @@ try {
 
     if ((Test-Path $InstallDir) -and (Test-Path (Join-Path $InstallDir 'extension.mjs'))) {
         $IsUpdate = $true
-        $versionFile = Join-Path $InstallDir 'version.txt'
-        if (Test-Path $versionFile) {
-            $OldVersion = (Get-Content $versionFile -Raw).Trim()
+        $shaFile = Join-Path $InstallDir '.installed-sha'
+        if (Test-Path $shaFile) {
+            $OldVersion = (Get-Content $shaFile -Raw).Trim()
         }
 
-        if ($OldVersion -eq $NewVersion) {
-            Write-Ok "Forge v$NewVersion is already installed and up to date"
+        if ($OldVersion -eq $NewVersionFull) {
+            Write-Ok "Forge ($DisplayVersion) is already installed and up to date"
             Write-Host "  Location: $InstallDir"
             exit 0
         }
 
-        $displayVersion = if ($OldVersion) { $OldVersion } else { 'unknown' }
-        Write-Info "Updating Forge: v$displayVersion → v$NewVersion"
+        $oldDisplay = if ($OldVersion) { $OldVersion.Substring(0, [Math]::Min(7, $OldVersion.Length)) } else { 'unknown' }
+        Write-Info "Updating Forge: $oldDisplay → $DisplayVersion"
     } else {
-        Write-Info "Installing Forge v$NewVersion"
+        Write-Info "Installing Forge ($DisplayVersion)"
     }
 
     # -----------------------------------------------------------------------
@@ -115,6 +128,8 @@ try {
             $oldPath = Join-Path $InstallDir $old
             if (Test-Path $oldPath) { Remove-Item $oldPath -Recurse -Force }
         }
+        $oldVersionTxt = Join-Path $InstallDir 'version.txt'
+        if (Test-Path $oldVersionTxt) { Remove-Item $oldVersionTxt -Force }
     }
 
     # -----------------------------------------------------------------------
@@ -147,16 +162,16 @@ try {
         }
     }
 
-    Copy-Item (Join-Path $SourceDir 'version.txt') (Join-Path $InstallDir 'version.txt') -Force
+    Set-Content -Path (Join-Path $InstallDir '.installed-sha') -Value $NewVersionFull -NoNewline
 
     # -----------------------------------------------------------------------
     # Summary
     # -----------------------------------------------------------------------
     Write-Host ''
     if ($IsUpdate) {
-        Write-Ok "Forge updated to v$NewVersion"
+        Write-Ok "Forge updated ($DisplayVersion)"
     } else {
-        Write-Ok "Forge v$NewVersion installed"
+        Write-Ok "Forge installed ($DisplayVersion)"
     }
     Write-Host ''
     Write-Host "  Extension:  $InstallDir\extension.mjs"

@@ -64,9 +64,19 @@ fi
 [ -f "${SOURCE_DIR}/extension/extension.mjs" ] || die "extension/extension.mjs not found in source"
 [ -d "${SOURCE_DIR}/.github/agents" ] || die ".github/agents/ directory not found in source"
 [ -f "${SOURCE_DIR}/plugin.json" ] || die "plugin.json not found in source"
-[ -f "${SOURCE_DIR}/version.txt" ] || die "version.txt not found in source"
 
-NEW_VERSION="$(cat "${SOURCE_DIR}/version.txt" | tr -d '[:space:]')"
+# Get source version from git SHA (falls back to file hash of extension.mjs)
+if git -C "${SOURCE_DIR}" rev-parse HEAD >/dev/null 2>&1; then
+    NEW_VERSION="$(git -C "${SOURCE_DIR}" rev-parse --short HEAD)"
+    NEW_VERSION_FULL="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
+    # Include tag if available
+    NEW_TAG="$(git -C "${SOURCE_DIR}" describe --tags --exact-match 2>/dev/null || true)"
+else
+    NEW_VERSION="$(file_hash "${SOURCE_DIR}/extension/extension.mjs" | cut -c1-12)"
+    NEW_VERSION_FULL="${NEW_VERSION}"
+    NEW_TAG=""
+fi
+DISPLAY_VERSION="${NEW_TAG:-${NEW_VERSION}}"
 
 # ---------------------------------------------------------------------------
 # Check existing installation
@@ -77,19 +87,20 @@ OLD_VERSION=""
 
 if [ -d "${INSTALL_DIR}" ] && [ -f "${INSTALL_DIR}/extension.mjs" ]; then
     IS_UPDATE=true
-    if [ -f "${INSTALL_DIR}/version.txt" ]; then
-        OLD_VERSION="$(cat "${INSTALL_DIR}/version.txt" | tr -d '[:space:]')"
+    if [ -f "${INSTALL_DIR}/.installed-sha" ]; then
+        OLD_VERSION="$(cat "${INSTALL_DIR}/.installed-sha" | tr -d '[:space:]')"
     fi
 
-    if [ "${OLD_VERSION}" = "${NEW_VERSION}" ]; then
-        ok "Forge v${NEW_VERSION} is already installed and up to date"
+    if [ "${OLD_VERSION}" = "${NEW_VERSION_FULL}" ]; then
+        ok "Forge (${DISPLAY_VERSION}) is already installed and up to date"
         printf "  ${BOLD}Location${NC}: ${INSTALL_DIR}\n"
         exit 0
     fi
 
-    info "Updating Forge: v${OLD_VERSION:-unknown} → v${NEW_VERSION}"
+    OLD_DISPLAY="${OLD_VERSION:0:7}"
+    info "Updating Forge: ${OLD_DISPLAY:-unknown} → ${DISPLAY_VERSION}"
 else
-    info "Installing Forge v${NEW_VERSION}"
+    info "Installing Forge (${DISPLAY_VERSION})"
 fi
 
 # ---------------------------------------------------------------------------
@@ -127,6 +138,7 @@ if [ "${IS_UPDATE}" = true ]; then
     rm -rf "${INSTALL_DIR}/commands" 2>/dev/null || true
     rm -rf "${INSTALL_DIR}/agents" 2>/dev/null || true
     rm -rf "${INSTALL_DIR}/skills" 2>/dev/null || true
+    rm -f "${INSTALL_DIR}/version.txt" 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -161,7 +173,7 @@ if [ -d "${BACKUP_DIR}" ]; then
     done
 fi
 
-cp "${SOURCE_DIR}/version.txt" "${INSTALL_DIR}/version.txt"
+printf '%s\n' "${NEW_VERSION_FULL}" > "${INSTALL_DIR}/.installed-sha"
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -169,9 +181,9 @@ cp "${SOURCE_DIR}/version.txt" "${INSTALL_DIR}/version.txt"
 
 printf "\n"
 if [ "${IS_UPDATE}" = true ]; then
-    ok "${BOLD}Forge updated to v${NEW_VERSION}${NC}"
+    ok "${BOLD}Forge updated (${DISPLAY_VERSION})${NC}"
 else
-    ok "${BOLD}Forge v${NEW_VERSION} installed${NC}"
+    ok "${BOLD}Forge installed (${DISPLAY_VERSION})${NC}"
 fi
 printf "\n"
 printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
