@@ -129,6 +129,11 @@ const session = await joinSession({
                         additionalContext: "Bicep file modified. Run anvil_bicep_lint and anvil_bicep_build to verify before presenting.",
                     };
                 }
+                if (/(^|\/)docs\/(adr|architecture)\//.test(path)) {
+                    return {
+                        additionalContext: "Architecture document modified. Validate Mermaid diagram syntax and WAF alignment before presenting.",
+                    };
+                }
             }
             if (input.toolName === "bash" && input.toolResult?.resultType !== "failure") {
                 const cmd = String(input.toolArgs?.command || "");
@@ -897,6 +902,7 @@ const session = await joinSession({
                 }
 
                 return JSON.stringify({
+                    task_id: args.task_id,
                     cost_summary: {
                         services: rows,
                         total_monthly: totalMonthly,

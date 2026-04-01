@@ -77,26 +77,23 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
 | **Commands** | Extension commands | `~/.copilot/extensions/anvil/commands/` |
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Copilot CLI                                                      │
-│                                                                    │
-│  /agent     → discovers ~/.copilot/agents/*.agent.md              │
-│  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs     │
-└────────┬──────────────┬──────────────┬──────────────┬─────────────┘
-         │              │              │              │
-   ┌─────▼──────┐ ┌─────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐ ┌────▼─────┐
-   │ anvil-core │ │ anvil-code │ │anvil-bicep │ │anvil-arc-│ │anvil-aks-│ │Extension│
-   │            │ │            │ │            │ │  ops     │ │  ops     │ │         │
-   │ /verify    │ │ agent.md   │ │ agent.md   │ │ agent.md │ │ agent.md │ │ Tools:  │
-   │ /evidence  │ │            │ │            │ │ ops-     │ │ aks-     │ │ git_*   │
-   │ guardrails │ │            │ │            │ │ guardrail│ │ guardrail│ │ bicep_* │
-   └────────────┘ └────────────┘ └────────────┘ └──────────┘ └──────────┘ │ ops_*   │
-                                                                           │ aks_*   │
-                  ┌──────────────┐                                         │ arch_*  │
-                  │anvil-        │                                         └─────────┘
-                  │ architect    │
-                  │ agent.md     │
-                  └──────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Copilot CLI                                                              │
+│                                                                           │
+│  /agent     → discovers ~/.copilot/agents/*.agent.md                     │
+│  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs            │
+└──┬───────┬───────┬───────┬───────┬───────┬──────────────────────────────┘
+   │       │       │       │       │       │
+ ┌─▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼────────┐   ┌──────────┐
+ │ core  ││ code ││bicep ││arc-  ││aks-  ││architect│   │Extension │
+ │       ││      ││      ││ ops  ││ ops  ││         │   │          │
+ │/verify││agent ││agent ││agent ││agent ││ agent   │   │ Tools:   │
+ │/evid. ││ .md  ││ .md  ││ .md  ││ .md  ││  .md    │   │ git_*    │
+ │guard- ││      ││      ││ops-  ││aks-  ││         │   │ bicep_*  │
+ │ rails ││      ││      ││guard ││guard ││         │   │ ops_*    │
+ └───────┘└──────┘└──────┘└──────┘└──────┘└─────────┘   │ aks_*    │
+                                                          │ arch_*   │
+                                                          └──────────┘
 ```
 
 ## What Gets Installed
@@ -120,7 +117,10 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
         └── plugins/                 ← Source packages (for reference)
             ├── anvil-core/
             ├── anvil-code/
-            └── anvil-bicep/
+            ├── anvil-bicep/
+            ├── anvil-arc-ops/
+            ├── anvil-aks-ops/
+            └── anvil-architect/
 ```
 
 ## Extension Tools

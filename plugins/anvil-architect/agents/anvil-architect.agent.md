@@ -119,12 +119,40 @@ Before designing, query session history for relevant context.
 
 ```sql
 -- database: session_store
-SELECT content, session_id, source_type FROM search_index
-WHERE search_index MATCH 'architecture OR design OR adr OR service OR diagram'
-ORDER BY rank LIMIT 10;
+SELECT s.id, s.summary, s.branch, sf.file_path, s.created_at
+FROM session_files sf JOIN sessions s ON sf.session_id = s.id
+WHERE (sf.file_path LIKE '%docs/adr/%' OR sf.file_path LIKE '%docs/architecture/%') AND sf.tool_name = 'edit'
+ORDER BY s.created_at DESC LIMIT 5;
 ```
 
-If past sessions produced ADRs or architecture decisions, follow established patterns.
+Then search for prior architecture decisions and design content:
+```sql
+-- database: session_store
+SELECT content, session_id, source_type FROM search_index
+WHERE search_index MATCH 'architecture OR design OR adr OR service selection OR diagram'
+AND session_id IN (
+    SELECT s.id FROM session_files sf JOIN sessions s ON sf.session_id = s.id
+    WHERE (sf.file_path LIKE '%docs/adr/%' OR sf.file_path LIKE '%docs/architecture/%') AND sf.tool_name = 'edit'
+    ORDER BY s.created_at DESC LIMIT 5
+) LIMIT 10;
+```
+
+Then check for past problems:
+```sql
+-- database: session_store
+SELECT content, session_id, source_type FROM search_index
+WHERE search_index MATCH 'regression OR broke OR failed OR reverted OR bug'
+AND session_id IN (
+    SELECT s.id FROM session_files sf JOIN sessions s ON sf.session_id = s.id
+    WHERE (sf.file_path LIKE '%docs/adr/%' OR sf.file_path LIKE '%docs/architecture/%') AND sf.tool_name = 'edit'
+    ORDER BY s.created_at DESC LIMIT 5
+) LIMIT 10;
+```
+
+**What to do with recall:**
+- If a past session created ADRs that were later reverted → mention it in your design: "⚡ **History**: Session {id} created ADRs that encountered {issue}. Accounting for that."
+- If a past session established architecture patterns → follow them.
+- If nothing relevant → move on silently.
 
 ### 1c. Requirements Discovery (Large tasks only)
 
@@ -282,7 +310,7 @@ Run every applicable tier. Do not stop at the first one. Defense in depth.
 
 If Tier 2 is unavailable (no Azure auth), INSERT a check with `check_name = 'tier2-no-azure-auth'`, `passed = 1`, and `output_snippet` explaining why. This is acceptable — Tier 1 and Tier 3 still provide meaningful validation.
 
-**After every check**, INSERT into the ledger (Medium and Large only). **If any check fails:** fix the design and re-validate (max 2 attempts).
+**After every check**, INSERT into the ledger (Medium and Large only). **If any check fails:** fix the design and re-validate (max 2 attempts). If you can't fix after 2 attempts, revert your changes (`git checkout HEAD -- docs/adr/ docs/architecture/`) and INSERT the failure. Do NOT leave the user with broken design documents.
 
 **Minimum signals:** 2 for Medium (document validation + WAF or security review), 3 for Large (document validation + WAF + cost or security review).
 
@@ -385,7 +413,7 @@ Present:
 **Estimated monthly cost**: $X (+$Y vs. baseline if applicable)
 **Confidence**: High / Medium / Low
 **Handoff**: Ready/Not ready for anvil-bicep implementation
-**Rollback**: `git checkout HEAD -- docs/`
+**Rollback**: `git checkout HEAD -- docs/adr/ docs/architecture/`
 ```
 
 **Confidence levels (use these definitions, not vibes):**
@@ -424,7 +452,7 @@ After presenting, automatically commit the design documents.
 3. Generate a commit message: `docs(architecture): {concise description}` + body summarizing the design and ADRs produced.
 4. Include the `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer.
 5. Commit: `git commit -m "{message}"`
-6. Tell the user: `✅ Committed on \`{branch}\`: {short_message}` and `Rollback: \`git revert HEAD\` or \`git checkout {pre_sha} -- docs/\``
+6. Tell the user: `✅ Committed on \`{branch}\`: {short_message}` and `Rollback: \`git revert HEAD\` or \`git checkout {pre_sha} -- docs/adr/ docs/architecture/\``
 
 For Small tasks: `ask_user` with choices "Commit this change" / "I'll commit later".
 
