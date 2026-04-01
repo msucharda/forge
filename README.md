@@ -13,6 +13,7 @@ This repository is a **marketplace** — install individual agent plugins or eve
 | **anvil-bicep** | Azure Bicep infrastructure agent with AVM modules | Install if you work with Azure Bicep |
 | **anvil-arc-ops** | Azure Arc operations agent with safety gates | Install if you manage Arc-enabled servers |
 | **anvil-aks-ops** | AKS operations agent with safety gates | Install if you manage AKS clusters |
+| **anvil-architect** | Azure architecture design agent with WAF compliance | Install if you design Azure solutions |
 
 ## Install
 
@@ -91,7 +92,11 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
    │ guardrails │ │            │ │            │ │ guardrail│ │ guardrail│ │ bicep_* │
    └────────────┘ └────────────┘ └────────────┘ └──────────┘ └──────────┘ │ ops_*   │
                                                                            │ aks_*   │
-                                                                           └─────────┘
+                  ┌──────────────┐                                         │ arch_*  │
+                  │anvil-        │                                         └─────────┘
+                  │ architect    │
+                  │ agent.md     │
+                  └──────────────┘
 ```
 
 ## What Gets Installed
@@ -102,7 +107,8 @@ Anvil uses custom agents and an extension runtime installed to Copilot CLI disco
 │   ├── anvil-code.agent.md
 │   ├── anvil-bicep.agent.md
 │   ├── anvil-arc-ops.agent.md
-│   └── anvil-aks-ops.agent.md
+│   ├── anvil-aks-ops.agent.md
+│   └── anvil-architect.agent.md
 └── extensions/
     └── anvil/
         ├── extension.mjs            ← Runtime — tools and hooks
@@ -135,6 +141,9 @@ The extension registers these tools, available in every Copilot CLI session:
 | `anvil_aks_check` | Pre-flight Azure auth, kubectl, kubelogin, and AKS prerequisites |
 | `anvil_aks_inventory` | List AKS clusters and node pools with health status |
 | `anvil_aks_preview` | Preview impact of AKS operations before execution |
+| `anvil_architect_check` | Pre-flight check for architecture design tasks |
+| `anvil_architect_cost` | Estimate monthly cost for a set of Azure services |
+| `anvil_architect_waf` | Check WAF compliance for selected Azure services |
 
 ## Commands
 

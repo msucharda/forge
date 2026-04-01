@@ -59,6 +59,16 @@
       "keywords": ["ops", "aks", "kubernetes", "azure", "k8s", "operations", "verification"],
       "license": "MIT",
       "repository": "https://github.com/msucharda/anvil"
+    },
+    {
+      "name": "anvil-architect",
+      "source": "anvil-architect",
+      "description": "Evidence-first Azure architecture agent. Designs cloud solutions with WAF compliance, cost estimation, and adversarial architecture review.",
+      "version": "1.2.0",
+      "author": { "name": "msucharda" },
+      "keywords": ["architecture", "azure", "design", "waf", "cost", "verification"],
+      "license": "MIT",
+      "repository": "https://github.com/msucharda/anvil"
     }
   ]
 }

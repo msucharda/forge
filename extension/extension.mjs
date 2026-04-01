@@ -101,6 +101,9 @@ const session = await joinSession({
                     "- anvil_aks_check: pre-flight Azure auth, kubectl, kubelogin, and AKS prerequisites",
                     "- anvil_aks_inventory: list AKS clusters and node pools with health status",
                     "- anvil_aks_preview: preview impact of AKS operations before execution",
+                    "- anvil_architect_check: pre-flight check for architecture design tasks",
+                    "- anvil_architect_cost: estimate monthly cost for a set of Azure services",
+                    "- anvil_architect_waf: check WAF compliance for selected Azure services",
                 ].join("\n"),
             };
         },
@@ -787,6 +790,150 @@ const session = await joinSession({
                     original_command: cmd,
                     guardrail: blocked ? `⚠️ ${blocked.reason} (decision: ${blocked.decision})` : "✅ passed",
                     note: "Provide cluster and resource_group for a detailed preview.",
+                }, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // Architect-specific tools (Azure Architecture Design)
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_architect_check",
+            description: "Pre-flight check for architecture design: verify Azure auth, existing infrastructure files, copilot-instructions.md, and ADR directory. Run before starting any architecture design task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug (e.g., design-data-platform)" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const [account, bicepFiles, tfFiles, copilotInstructions, adrDir, archDir] = await Promise.all([
+                    shell("az", ["account", "show", "--query", "{name:name, id:id, tenantId:tenantId}", "-o", "json"]),
+                    shell("bash", ["-c", "find . -name '*.bicep' -not -path './.git/*' 2>/dev/null | head -20"]),
+                    shell("bash", ["-c", "find . -name '*.tf' -not -path './.git/*' 2>/dev/null | head -20"]),
+                    shell("bash", ["-c", "test -f .github/copilot-instructions.md && echo 'found' || echo 'not found'"]),
+                    shell("bash", ["-c", "ls docs/adr/ 2>/dev/null | head -20 || echo 'NOT_FOUND'"]),
+                    shell("bash", ["-c", "ls docs/architecture/ 2>/dev/null | head -20 || echo 'NOT_FOUND'"]),
+                ]);
+
+                let subscription = null;
+                if (account.ok) {
+                    try { subscription = JSON.parse(account.stdout); }
+                    catch { subscription = { error: "Failed to parse az output", raw: (account.stdout || "").slice(0, 200) }; }
+                }
+
+                const bicepList = bicepFiles.ok ? bicepFiles.stdout.split("\n").filter(Boolean) : [];
+                const tfList = tfFiles.ok ? tfFiles.stdout.split("\n").filter(Boolean) : [];
+                const hasInstructions = copilotInstructions.ok && copilotInstructions.stdout.trim() === "found";
+                const hasAdrs = adrDir.ok && adrDir.stdout.trim() !== "NOT_FOUND" && adrDir.stdout.trim().length > 0;
+                const hasArchDocs = archDir.ok && archDir.stdout.trim() !== "NOT_FOUND" && archDir.stdout.trim().length > 0;
+
+                const report = {
+                    authenticated: account.ok,
+                    subscription,
+                    existing_infra: {
+                        bicep_files: bicepList.length,
+                        terraform_files: tfList.length,
+                        files: [...bicepList, ...tfList].slice(0, 10),
+                    },
+                    copilot_instructions: hasInstructions,
+                    existing_adrs: hasAdrs ? adrDir.stdout.trim().split("\n").filter(Boolean) : [],
+                    existing_arch_docs: hasArchDocs ? archDir.stdout.trim().split("\n").filter(Boolean) : [],
+                    task_id: args.task_id,
+                };
+
+                const warnings = [];
+                if (!account.ok) warnings.push("⚠️ Not authenticated to Azure — cost estimation and WAF queries will be limited");
+                if (!hasInstructions) warnings.push("ℹ️ No .github/copilot-instructions.md — platform context unavailable");
+                if (bicepList.length === 0 && tfList.length === 0) warnings.push("ℹ️ No existing infrastructure files found");
+                if (bicepList.length > 0) warnings.push(`✅ Found ${bicepList.length} Bicep file(s)`);
+                if (tfList.length > 0) warnings.push(`✅ Found ${tfList.length} Terraform file(s)`);
+                if (hasAdrs) warnings.push(`✅ Found existing ADRs in docs/adr/`);
+                if (warnings.length === 0) warnings.push("✅ Ready for architecture design");
+
+                return JSON.stringify({ ...report, warnings }, null, 2);
+            },
+        },
+        {
+            name: "anvil_architect_cost",
+            description: "Format and sum cost estimates for a set of Azure services. This is a calculator — it sums caller-provided estimates into a structured table. For verified pricing, use AzureMCPServer-pricing to look up actual retail prices before calling this tool.",
+            parameters: {
+                type: "object",
+                properties: {
+                    services: {
+                        type: "string",
+                        description: "JSON array of services: [{\"service\": \"Container Apps\", \"sku\": \"Consumption\", \"region\": \"swedencentral\", \"quantity\": 3, \"estimated_monthly\": 45}]. Use AzureMCPServer-pricing to get actual prices before populating estimated_monthly.",
+                    },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["services", "task_id"],
+            },
+            handler: async (args) => {
+                let services;
+                try {
+                    services = JSON.parse(args.services);
+                } catch {
+                    return JSON.stringify({ error: "Invalid JSON in services parameter" });
+                }
+
+                if (!Array.isArray(services) || services.length === 0) {
+                    return JSON.stringify({ error: "services must be a non-empty JSON array" });
+                }
+
+                let totalMonthly = 0;
+                const rows = [];
+                for (const svc of services) {
+                    const monthly = Number(svc.estimated_monthly) || 0;
+                    totalMonthly += monthly * (Number(svc.quantity) || 1);
+                    rows.push({
+                        service: svc.service || "Unknown",
+                        sku: svc.sku || "N/A",
+                        region: svc.region || "N/A",
+                        quantity: svc.quantity || 1,
+                        monthly_per_unit: monthly,
+                        monthly_total: monthly * (Number(svc.quantity) || 1),
+                    });
+                }
+
+                return JSON.stringify({
+                    cost_summary: {
+                        services: rows,
+                        total_monthly: totalMonthly,
+                        total_annual: totalMonthly * 12,
+                        currency: "USD",
+                        disclaimer: "This is a calculator — values are caller-provided estimates. Verify with AzureMCPServer-pricing for evidence-based costs. Actual costs may differ with EA/CSP agreements, reserved instances, or consumption patterns.",
+                    },
+                    note: "Do NOT INSERT this as a passed verification check. Use AzureMCPServer-pricing to verify costs first, then INSERT with evidence.",
+                }, null, 2);
+            },
+        },
+        {
+            name: "anvil_architect_waf",
+            description: "Check Well-Architected Framework compliance for selected Azure services. Returns a summary of which services have WAF guidance available and key recommendations.",
+            parameters: {
+                type: "object",
+                properties: {
+                    services: {
+                        type: "string",
+                        description: "Comma-separated list of Azure service names (e.g., 'container-apps,postgresql,key-vault')",
+                    },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["services", "task_id"],
+            },
+            handler: async (args) => {
+                const serviceList = args.services.split(",").map((s) => s.trim()).filter(Boolean);
+
+                if (serviceList.length === 0) {
+                    return JSON.stringify({ error: "No services provided" });
+                }
+
+                return JSON.stringify({
+                    services: serviceList,
+                    service_count: serviceList.length,
+                    instruction: "Call wellarchitectedframework_serviceguide_get for EACH service listed below. After getting real WAF guidance, INSERT results into the verification ledger. Do NOT INSERT a passed check until actual WAF data is retrieved.",
+                    example_sql: `-- INSERT AFTER calling wellarchitectedframework_serviceguide_get:\nINSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'waf-{service_name}', 'wellarchitectedframework_serviceguide_get', 'WAF check for {service_name}', 0, '{summary_of_guidance}', 1);`,
                 }, null, 2);
             },
         },
