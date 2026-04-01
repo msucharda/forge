@@ -101,13 +101,6 @@ Every anvil follows the same discipline:
 | `anvil_architect_cost` | Estimate monthly Azure costs |
 | `anvil_architect_waf` | Check WAF compliance |
 
-## Slash commands
-
-| Command | Description |
-|---------|-------------|
-| `/verify` | Run verification checks on current changes |
-| `/evidence` | Generate an evidence bundle for the current task |
-
 ## Customization
 
 Edit agents directly — changes take effect on next `/clear`:

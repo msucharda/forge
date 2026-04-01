@@ -6,6 +6,5 @@
     "name": "msucharda"
   },
   "license": "MIT",
-  "keywords": ["verification", "code-review", "adversarial", "evidence", "bicep", "azure"],
-  "commands": "commands/"
+  "keywords": ["verification", "code-review", "adversarial", "evidence", "bicep", "azure"]
 }

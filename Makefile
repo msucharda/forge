@@ -51,7 +51,7 @@ lint-plugins:
 				(printf "\033[0;31m✖\033[0m $$pj is not valid JSON\n" && exit 1); \
 		fi; \
 	done
-	@for f in plugins/*/commands/*.md plugins/*/agents/*.agent.md; do \
+	@for f in plugins/*/agents/*.agent.md; do \
 		if [ -f "$$f" ]; then \
 			head -1 "$$f" | grep -q "^---$$" || \
 				(printf "\033[0;31m✖\033[0m $$f missing frontmatter\n" && exit 1); \

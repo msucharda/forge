@@ -152,7 +152,7 @@ fi
 # Install
 # ---------------------------------------------------------------------------
 
-mkdir -p "${INSTALL_DIR}/commands" "${INSTALL_DIR}/plugins" "${AGENTS_DIR}"
+mkdir -p "${INSTALL_DIR}/plugins" "${AGENTS_DIR}"
 
 # Copy extension (tools & hooks)
 cp "${SOURCE_DIR}/extension/extension.mjs" "${INSTALL_DIR}/extension.mjs"
@@ -175,16 +175,6 @@ for plugin_agents in "${SOURCE_DIR}/plugins/"*/agents; do
 done
 agent_count=$(ls -1 "${AGENTS_DIR}/"anvil-*.agent.md 2>/dev/null | wc -l)
 ok "Installed ${agent_count} agent(s) to ${AGENTS_DIR}/"
-
-# Assemble commands from all plugins into extension commands/
-rm -rf "${INSTALL_DIR}/commands"
-mkdir -p "${INSTALL_DIR}/commands"
-for plugin_commands in "${SOURCE_DIR}/plugins/"*/commands; do
-    [ -d "${plugin_commands}" ] || continue
-    cp "${plugin_commands}/"*.md "${INSTALL_DIR}/commands/" 2>/dev/null || true
-done
-cmd_count=$(ls -1 "${INSTALL_DIR}/commands/"*.md 2>/dev/null | wc -l)
-ok "Assembled ${cmd_count} command(s) from plugins"
 
 # Restore user-created agents (agents that exist in backup but not in source)
 if [ -d "${BACKUP_DIR}" ]; then
@@ -224,7 +214,6 @@ fi
 printf "\n"
 printf "  ${BOLD}Extension${NC}:  ${INSTALL_DIR}/extension.mjs\n"
 printf "  ${BOLD}Agents${NC}:     ${AGENTS_DIR}/\n"
-printf "  ${BOLD}Commands${NC}:   ${INSTALL_DIR}/commands/\n"
 printf "  ${BOLD}Plugins${NC}:    ${INSTALL_DIR}/plugins/\n"
 printf "\n"
 

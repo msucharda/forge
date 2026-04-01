@@ -5,6 +5,5 @@
   "author": { "name": "msucharda" },
   "license": "MIT",
   "keywords": ["verification", "evidence", "guardrails"],
-  "commands": "commands/",
   "hooks": "hooks.json"
 }
