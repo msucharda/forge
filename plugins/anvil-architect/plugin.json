@@ -1,9 +1,0 @@
-{
-  "name": "anvil-architect",
-  "description": "Evidence-first Azure architecture agent. Designs cloud solutions with WAF compliance, cost estimation, and adversarial architecture review.",
-  "version": "1.3.0",
-  "author": { "name": "msucharda" },
-  "license": "MIT",
-  "keywords": ["architecture", "azure", "design", "waf", "cost"],
-  "agents": "agents/"
-}

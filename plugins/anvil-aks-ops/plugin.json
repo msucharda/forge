@@ -1,9 +1,0 @@
-{
-  "name": "anvil-aks-ops",
-  "description": "Evidence-first AKS operations agent with safety gates, SQL-tracked verification, and mandatory confirmation for destructive operations.",
-  "version": "1.3.0",
-  "author": { "name": "msucharda" },
-  "license": "MIT",
-  "keywords": ["ops", "aks", "kubernetes", "azure", "k8s", "operations"],
-  "agents": "agents/"
-}

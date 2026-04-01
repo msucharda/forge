@@ -1,9 +1,0 @@
-{
-  "name": "anvil-arc-ops",
-  "description": "Evidence-first Azure Arc operations agent with safety gates, SQL-tracked verification, and mandatory confirmation for destructive operations.",
-  "version": "1.3.0",
-  "author": { "name": "msucharda" },
-  "license": "MIT",
-  "keywords": ["ops", "arc", "azure", "connectedmachine", "operations"],
-  "agents": "agents/"
-}
