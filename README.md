@@ -12,7 +12,10 @@ Forge ships **evidence-first coding agents** for [GitHub Copilot CLI](https://do
 | **anvil-bicep** | Azure Bicep IaC — AVM modules, linting, ARM validation |
 | **anvil-arc-ops** | Azure Arc server operations with safety gates |
 | **anvil-aks-ops** | AKS cluster operations with safety gates |
-| **anvil-architect** | Azure architecture design with WAF compliance and cost estimation |
+| **anvil-architect** | Azure architecture design with WAF compliance, cost estimation, and pre-mortem risk analysis |
+| **anvil-sovereign** | EU data sovereignty classification — guides data classification (C1–C4), maps to Azure sovereign levels (L1–L3), identifies GDPR/DORA/NIS2 requirements. Run before anvil-architect for EU workloads |
+| **anvil-diagnose** | Read-only Azure troubleshooting — traces root causes, never modifies resources |
+| **anvil-audit** | Read-only Azure compliance scanner — network, identity, data, monitoring, cost, policy |
 
 ## Install
 
@@ -56,20 +59,25 @@ make uninstall
 ## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Copilot CLI                                                         │
-│                                                                      │
-│  /agent     → discovers ~/.copilot/agents/*.agent.md                │
-│  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs       │
-└──┬───────┬───────┬───────┬───────┬───────┬───────────────────────── ┘
-   │       │       │       │       │       │
- ┌─▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼────────┐
- │ code  ││bicep ││arc-  ││aks-  ││archi-││Extension │
- │       ││      ││ ops  ││ ops  ││ tect ││ Runtime  │
- │agent  ││agent ││agent ││agent ││agent ││          │
- │ .md   ││ .md  ││ .md  ││ .md  ││ .md  ││ Tools +  │
- └───────┘└──────┘└──────┘└──────┘└──────┘│Guardrails│
-                                           └──────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Copilot CLI                                              │
+│                                                            │
+│  /agent     → discovers ~/.copilot/agents/*.agent.md      │
+│  Extension  → loads ~/.copilot/extensions/anvil/          │
+└───────┬────────────────────────────────────────────┬──────┘
+        │                                            │
+  ┌─────▼──────────┐                       ┌─────────▼────────┐
+  │ 8 Agents (.md) │                       │ Extension Runtime │
+  │                │                       │                   │
+  │ code           │                       │ 19 tools:         │
+  │ bicep          │                       │ git_check, verify │
+  │ architect      │                       │ bicep_*, ops_*    │
+  │ sovereign      │                       │ aks_*, architect_*│
+  │ arc-ops        │                       │ sovereign_*       │
+  │ aks-ops        │                       │ audit_*           │
+  │ diagnose       │                       │ evidence_bundle   │
+  │ audit          │                       │                   │
+  └────────────────┘                       └───────────────────┘
 ```
 
 Every anvil follows the same discipline:
@@ -99,6 +107,10 @@ Every anvil follows the same discipline:
 | `anvil_architect_check` | Pre-flight for architecture design |
 | `anvil_architect_cost` | Estimate monthly Azure costs |
 | `anvil_architect_waf` | Check WAF compliance |
+| `anvil_architect_inventory` | Query Azure for existing infrastructure inventory |
+| `anvil_sovereign_check` | Pre-flight sovereignty classification check |
+| `anvil_sovereign_validate` | Validate sovereignty profile YAML for consistency |
+| `anvil_audit_scan` | Run Azure compliance checks by category (network/identity/data/monitoring/cost/policy) |
 
 ## Customization
 
