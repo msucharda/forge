@@ -111,6 +111,8 @@ const session = await joinSession({
                     "- anvil_architect_cost: estimate monthly cost for a set of Azure services",
                     "- anvil_architect_waf: check WAF compliance for selected Azure services",
                     "- anvil_architect_inventory: query Azure for existing infrastructure inventory",
+                    "- anvil_sovereign_check: pre-flight check for sovereignty classification tasks",
+                    "- anvil_sovereign_validate: validate sovereignty profile YAML for consistency",
                     "- anvil_audit_scan: run Azure compliance checks by category (network/identity/data/monitoring/cost/policy)",
                     readOnlyHint,
                 ].filter(Boolean).join("\n"),
@@ -1013,6 +1015,124 @@ const session = await joinSession({
                 inventory.sql = `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'research-inventory', 'anvil_architect_inventory', 'az resource/vnet/keyvault/db list (scope: ${sqlEscape(rgLabel)})', 0, '${sqlEscape(snippet)}', 1);`;
 
                 return JSON.stringify(inventory, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // Sovereign-specific tools (EU data classification & sovereignty)
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_sovereign_check",
+            description: "Pre-flight check for sovereignty classification: verify existing profiles, copilot-instructions.md, and docs/sovereignty/ directory. Run before starting any sovereignty classification task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug (e.g., classify-customer-platform)" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const [copilotInstructions, sovDir, existingProfiles] = await Promise.all([
+                    shell("bash", ["-c", "test -f .github/copilot-instructions.md && echo 'found' || echo 'not found'"]),
+                    shell("bash", ["-c", "ls docs/sovereignty/ 2>/dev/null | head -20 || echo 'NOT_FOUND'"]),
+                    shell("bash", ["-c", "find . -name 'sovereignty-profile-*.yaml' -not -path './.git/*' 2>/dev/null | head -10"]),
+                ]);
+
+                const hasInstructions = copilotInstructions.ok && copilotInstructions.stdout.trim() === "found";
+                const hasSovDir = sovDir.ok && sovDir.stdout.trim() !== "NOT_FOUND" && sovDir.stdout.trim().length > 0;
+                const profiles = existingProfiles.ok ? existingProfiles.stdout.split("\n").filter(Boolean) : [];
+
+                const report = {
+                    copilot_instructions: hasInstructions,
+                    existing_profiles: profiles,
+                    sovereignty_dir_exists: hasSovDir,
+                    task_id: args.task_id,
+                };
+
+                const warnings = [];
+                if (!hasInstructions) warnings.push("ℹ️ No .github/copilot-instructions.md — platform context unavailable");
+                if (profiles.length > 0) warnings.push(`✅ Found ${profiles.length} existing sovereignty profile(s) — review for consistency`);
+                if (!hasSovDir) warnings.push("ℹ️ docs/sovereignty/ directory does not exist — will be created");
+                if (warnings.length === 0) warnings.push("✅ Ready for sovereignty classification");
+
+                return JSON.stringify({ ...report, warnings }, null, 2);
+            },
+        },
+        {
+            name: "anvil_sovereign_validate",
+            description: "Validate a sovereignty profile YAML for internal consistency. Checks regulatory-classification alignment, Azure constraint coherence, and completeness.",
+            parameters: {
+                type: "object",
+                properties: {
+                    profile_path: { type: "string", description: "Path to sovereignty profile YAML (default: auto-detect from task_id)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const profilePath = args.profile_path ||
+                    `docs/sovereignty/sovereignty-profile-${args.task_id}.yaml`;
+
+                if (!existsSync(profilePath)) {
+                    return JSON.stringify({ error: `Profile not found: ${profilePath}`, passed: 0 });
+                }
+
+                const content = readFileSync(profilePath, "utf-8");
+                const errors = [];
+                const warnings = [];
+
+                // Structure checks
+                if (!content.includes("sovereignty_profile:")) errors.push("Missing sovereignty_profile root key");
+                if (!content.includes("data_classification:")) errors.push("Missing data_classification section");
+                if (!content.includes("regulatory_context:")) errors.push("Missing regulatory_context section");
+                if (!content.includes("azure_constraints:")) errors.push("Missing azure_constraints section");
+                if (!content.includes("handoff:")) errors.push("Missing handoff section");
+
+                // Classification-sovereign level coherence
+                if (content.includes("special_category: true") && !content.includes("overall_level: C4")) {
+                    errors.push("Special category data found but overall level is not C4 (Restricted)");
+                }
+                if (content.includes("overall_sovereign_level: L3") && !content.includes("confidential_computing: true")) {
+                    errors.push("Sovereign level L3 requires confidential_computing: true");
+                }
+                if (content.includes("overall_sovereign_level: L2") && !(/customer-managed-key/.test(content))) {
+                    errors.push("Sovereign level L2 requires customer-managed-key encryption");
+                }
+
+                // Regulatory consistency
+                if (content.includes("dora: true") && !(/customer-managed-key/.test(content))) {
+                    warnings.push("DORA compliance selected but CMK encryption not required");
+                }
+                if (content.includes("gdpr_special_categories: true") && !content.includes("overall_level: C4")) {
+                    errors.push("GDPR special categories flagged but overall classification is not C4");
+                }
+
+                // Region checks — no non-EU regions allowed
+                const nonEuRegions = ["eastus", "westus", "centralus", "eastus2", "westus2", "westus3",
+                    "southcentralus", "northcentralus", "westcentralus", "eastasia", "southeastasia",
+                    "japaneast", "japanwest", "australiaeast", "australiasoutheast",
+                    "brazilsouth", "canadacentral", "canadaeast", "centralindia",
+                    "southindia", "westindia", "koreacentral", "koreasouth",
+                    "southafricanorth", "uaenorth", "qatarcentral"];
+                for (const region of nonEuRegions) {
+                    if (content.includes(region)) {
+                        errors.push(`Non-EU region found in profile: ${region}`);
+                    }
+                }
+
+                const passed = errors.length === 0 ? 1 : 0;
+                const snippet = passed
+                    ? `Validation passed: ${warnings.length} warning(s)`
+                    : `Validation failed: ${errors.length} error(s), ${warnings.length} warning(s)`;
+
+                return JSON.stringify({
+                    profile: profilePath,
+                    task_id: args.task_id,
+                    passed,
+                    errors,
+                    warnings,
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'sovereign-validate', 'anvil_sovereign_validate', 'validate ${sqlEscape(profilePath)}', 0, '${sqlEscape(snippet)}', ${passed});`,
+                }, null, 2);
             },
         },
 

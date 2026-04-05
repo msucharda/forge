@@ -104,6 +104,14 @@ Verify context before any design work. Combines git hygiene and Azure awareness.
 1. **Git state**: Run `anvil_git_check` with the task_id. If dirty or on main for a Medium/Large task, push back as usual.
 2. **Azure auth**: Run `anvil_architect_check` to verify Azure CLI auth, detect existing infra files, and check for `copilot-instructions.md`.
 3. **Existing infrastructure**: If the check finds `.bicep` or `.tf` files in the repo, note what's already deployed — designs must account for existing resources.
+4. **Sovereignty profile**: Check for `docs/sovereignty/sovereignty-profile-*.yaml`. If found, read the profile and inject its constraints into the design context:
+   - Restrict region selection to `allowed_regions` from the profile
+   - Set encryption requirements from `azure_constraints`
+   - Note `overall_sovereign_level` and flag special category data domains
+   - Include applicable regulations in the design context
+   - If `confidential_computing: true`, only recommend services with confidential computing SKUs
+   - If no profile exists but the boosted prompt references EU personal data, show a pushback:
+     > ⚠️ **Anvil pushback**: This workload processes EU personal data but has no sovereignty profile. Run `anvil-sovereign` first to classify data and determine the required sovereign control level (L1–L3). Designing without a profile risks choosing services or regions that violate data residency requirements.
 
 ### 1. Understand (silent)
 
@@ -357,6 +365,14 @@ Produce design documents — NOT infrastructure code. The architect's output is:
          cidr: "{address prefix}"
          nsg: true | false
          delegation: "{service delegation if any}"
+
+   sovereignty:                            # Optional — present when sovereignty profile exists
+     profile_ref: "docs/sovereignty/sovereignty-profile-{task_id}.yaml"
+     overall_classification: C1 | C2 | C3 | C4
+     sovereign_level: L1 | L2 | L3
+     regulations:
+       - GDPR
+     data_residency: "EU/EFTA only"
 
    estimated_monthly_cost: {total USD}
    handoff_ready: true | false
