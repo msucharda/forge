@@ -59,20 +59,25 @@ make uninstall
 ## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Copilot CLI                                                         │
-│                                                                      │
-│  /agent     → discovers ~/.copilot/agents/*.agent.md                │
-│  Extension  → loads ~/.copilot/extensions/anvil/extension.mjs       │
-└──┬───────┬───────┬───────┬───────┬───────┬───────────────────────── ┘
-   │       │       │       │       │       │
- ┌─▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼─────┐┌▼────────┐
- │ code  ││bicep ││arc-  ││aks-  ││archi-││Extension │
- │       ││      ││ ops  ││ ops  ││ tect ││ Runtime  │
- │agent  ││agent ││agent ││agent ││agent ││          │
- │ .md   ││ .md  ││ .md  ││ .md  ││ .md  ││ Tools +  │
- └───────┘└──────┘└──────┘└──────┘└──────┘│Guardrails│
-                                           └──────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Copilot CLI                                              │
+│                                                            │
+│  /agent     → discovers ~/.copilot/agents/*.agent.md      │
+│  Extension  → loads ~/.copilot/extensions/anvil/          │
+└───────┬────────────────────────────────────────────┬──────┘
+        │                                            │
+  ┌─────▼──────────┐                       ┌─────────▼────────┐
+  │ 8 Agents (.md) │                       │ Extension Runtime │
+  │                │                       │                   │
+  │ code           │                       │ 19 tools:         │
+  │ bicep          │                       │ git_check, verify │
+  │ architect      │                       │ bicep_*, ops_*    │
+  │ sovereign      │                       │ aks_*, architect_*│
+  │ arc-ops        │                       │ sovereign_*       │
+  │ aks-ops        │                       │ audit_*           │
+  │ diagnose       │                       │ evidence_bundle   │
+  │ audit          │                       │                   │
+  └────────────────┘                       └───────────────────┘
 ```
 
 Every anvil follows the same discipline:
