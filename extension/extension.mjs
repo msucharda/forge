@@ -947,8 +947,16 @@ const session = await joinSession({
                 return JSON.stringify({
                     services: serviceList,
                     service_count: serviceList.length,
-                    instruction: "Call wellarchitectedframework_serviceguide_get for EACH service listed below. After getting real WAF guidance, INSERT results into the verification ledger. Do NOT INSERT a passed check until actual WAF data is retrieved.",
-                    example_sql: `-- INSERT AFTER calling wellarchitectedframework_serviceguide_get:\nINSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'waf-{service_name}', 'wellarchitectedframework_serviceguide_get', 'WAF check for {service_name}', 0, '{summary_of_guidance}', 1);`,
+                    instruction: "Call the AzureMCPServer-wellarchitectedframework MCP tool for EACH service listed below. Use the hierarchical command routing pattern: set command to 'wellarchitectedframework_serviceguide_get' and pass the service name in parameters.service. After getting real WAF guidance, INSERT results into the verification ledger. Do NOT INSERT a passed check until actual WAF data is retrieved.",
+                    tool_call_example: {
+                        tool: "AzureMCPServer-wellarchitectedframework",
+                        args: {
+                            intent: "Get WAF guidance for {service_name}",
+                            command: "wellarchitectedframework_serviceguide_get",
+                            parameters: { service: "{service_name}" },
+                        },
+                    },
+                    example_sql: `-- INSERT AFTER calling AzureMCPServer-wellarchitectedframework:\nINSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'waf-{service_name}', 'AzureMCPServer-wellarchitectedframework', 'wellarchitectedframework_serviceguide_get service={service_name}', 0, '{summary_of_guidance}', 1);`,
                 }, null, 2);
             },
         },
