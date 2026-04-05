@@ -12,7 +12,9 @@ Forge ships **evidence-first coding agents** for [GitHub Copilot CLI](https://do
 | **anvil-bicep** | Azure Bicep IaC — AVM modules, linting, ARM validation |
 | **anvil-arc-ops** | Azure Arc server operations with safety gates |
 | **anvil-aks-ops** | AKS cluster operations with safety gates |
-| **anvil-architect** | Azure architecture design with WAF compliance and cost estimation |
+| **anvil-architect** | Azure architecture design with WAF compliance, cost estimation, and pre-mortem risk analysis |
+| **anvil-diagnose** | Read-only Azure troubleshooting — traces root causes, never modifies resources |
+| **anvil-audit** | Read-only Azure compliance scanner — network, identity, data, monitoring, cost, policy |
 
 ## Install
 
@@ -99,6 +101,8 @@ Every anvil follows the same discipline:
 | `anvil_architect_check` | Pre-flight for architecture design |
 | `anvil_architect_cost` | Estimate monthly Azure costs |
 | `anvil_architect_waf` | Check WAF compliance |
+| `anvil_architect_inventory` | Query Azure for existing infrastructure inventory |
+| `anvil_audit_scan` | Run Azure compliance checks by category (network/identity/data/monitoring/cost/policy) |
 
 ## Customization
 

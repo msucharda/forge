@@ -89,6 +89,10 @@ const session = await joinSession({
         },
 
         onUserPromptSubmitted: async (input) => {
+            const prompt = String(input.userPrompt || "").toLowerCase();
+            const readOnlyHint = (prompt.includes("diagnose") || prompt.includes("diagnosis") || prompt.includes("audit") || prompt.includes("compliance scan"))
+                ? "\n⚠️ Diagnose/Audit agents are READ-ONLY. Do not execute any mutating Azure commands (create/update/delete). Only use read/list/show/get commands."
+                : "";
             return {
                 additionalContext: [
                     "Anvil extension is active. Custom tools available:",
@@ -106,7 +110,10 @@ const session = await joinSession({
                     "- anvil_architect_check: pre-flight check for architecture design tasks",
                     "- anvil_architect_cost: estimate monthly cost for a set of Azure services",
                     "- anvil_architect_waf: check WAF compliance for selected Azure services",
-                ].join("\n"),
+                    "- anvil_architect_inventory: query Azure for existing infrastructure inventory",
+                    "- anvil_audit_scan: run Azure compliance checks by category (network/identity/data/monitoring/cost/policy)",
+                    readOnlyHint,
+                ].filter(Boolean).join("\n"),
             };
         },
 
@@ -942,6 +949,178 @@ const session = await joinSession({
                     service_count: serviceList.length,
                     instruction: "Call wellarchitectedframework_serviceguide_get for EACH service listed below. After getting real WAF guidance, INSERT results into the verification ledger. Do NOT INSERT a passed check until actual WAF data is retrieved.",
                     example_sql: `-- INSERT AFTER calling wellarchitectedframework_serviceguide_get:\nINSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'waf-{service_name}', 'wellarchitectedframework_serviceguide_get', 'WAF check for {service_name}', 0, '{summary_of_guidance}', 1);`,
+                }, null, 2);
+            },
+        },
+        // ---------------------------------------------------------------
+        // Architect inventory tool
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_architect_inventory",
+            description: "Query Azure for existing infrastructure: resource groups, VNets, subnets, DNS zones, databases, compute, and Key Vaults. Returns structured inventory for architecture design context.",
+            parameters: {
+                type: "object",
+                properties: {
+                    resource_group: { type: "string", description: "Scope to a specific resource group (optional — queries subscription if omitted)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const rgArgs = args.resource_group ? ["--resource-group", args.resource_group] : [];
+                const rgLabel = args.resource_group || "(subscription)";
+
+                const [resources, vnets, keyvaults, databases] = await Promise.all([
+                    shell("az", ["resource", "list", ...rgArgs,
+                        "--query", "[].{name:name, type:type, location:location, resourceGroup:resourceGroup}",
+                        "-o", "json"]),
+                    shell("az", ["network", "vnet", "list", ...rgArgs,
+                        "--query", "[].{name:name, addressSpace:addressSpace.addressPrefixes, subnets:subnets[].{name:name, prefix:addressPrefix}, resourceGroup:resourceGroup, location:location}",
+                        "-o", "json"]),
+                    shell("az", ["keyvault", "list", ...rgArgs,
+                        "--query", "[].{name:name, resourceGroup:resourceGroup, location:location, enablePurgeProtection:properties.enablePurgeProtection}",
+                        "-o", "json"]),
+                    shell("az", ["resource", "list", ...rgArgs,
+                        "--query", "[?contains(type,'Microsoft.DBforPostgreSQL') || contains(type,'Microsoft.Sql') || contains(type,'Microsoft.DocumentDB')].{name:name, type:type, location:location, resourceGroup:resourceGroup}",
+                        "-o", "json"]),
+                ]);
+
+                const parse = (result) => {
+                    if (!result.ok) return { error: result.stderr || "query failed" };
+                    try { return JSON.parse(result.stdout || "[]"); }
+                    catch { return { error: "parse failed" }; }
+                };
+
+                const inventory = {
+                    scope: rgLabel,
+                    task_id: args.task_id,
+                    resources: parse(resources),
+                    vnets: parse(vnets),
+                    keyvaults: parse(keyvaults),
+                    databases: parse(databases),
+                    resource_count: Array.isArray(parse(resources)) ? parse(resources).length : 0,
+                };
+
+                const snippet = JSON.stringify(inventory).slice(0, 500);
+                inventory.sql = `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'research-inventory', 'anvil_architect_inventory', 'az resource/vnet/keyvault/db list (scope: ${sqlEscape(rgLabel)})', 0, '${sqlEscape(snippet)}', 1);`;
+
+                return JSON.stringify(inventory, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // Audit scan tool (read-only compliance checks)
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_audit_scan",
+            description: "Run Azure compliance checks for a specific category (network, identity, data, monitoring, cost, policy). Returns structured findings for the audit report. Read-only — never modifies resources.",
+            parameters: {
+                type: "object",
+                properties: {
+                    category: { type: "string", enum: ["network", "identity", "data", "monitoring", "cost", "policy"], description: "Audit category to scan" },
+                    resource_group: { type: "string", description: "Scope to a resource group (optional — scans subscription if omitted)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["category", "task_id"],
+            },
+            handler: async (args) => {
+                const rgArgs = args.resource_group ? ["--resource-group", args.resource_group] : [];
+                const rgLabel = args.resource_group || "(subscription)";
+                const findings = [];
+
+                const runCheck = async (name, azArgs, assessFn) => {
+                    const result = await shell("az", azArgs);
+                    if (!result.ok) {
+                        findings.push({ check: name, severity: "info", finding: `Query failed: ${(result.stderr || "").slice(0, 200)}` });
+                        return;
+                    }
+                    let data;
+                    try { data = JSON.parse(result.stdout || "[]"); } catch { return; }
+                    if (Array.isArray(data)) assessFn(data);
+                };
+
+                switch (args.category) {
+                    case "network":
+                        await runCheck("public-ips", ["network", "public-ip", "list", ...rgArgs, "-o", "json"], (ips) => {
+                            for (const ip of ips) {
+                                findings.push({ check: "public-ip", severity: "high", resource: ip.name, finding: `Public IP exists: ${ip.ipAddress || "unassigned"}`, resourceGroup: ip.resourceGroup });
+                            }
+                        });
+                        await runCheck("nsg-rules", ["network", "nsg", "list", ...rgArgs, "--query", "[].{name:name, rules:securityRules[?access=='Allow' && direction=='Inbound' && sourceAddressPrefix=='*'].{name:name, destPort:destinationPortRange, priority:priority}, resourceGroup:resourceGroup}", "-o", "json"], (nsgs) => {
+                            for (const nsg of nsgs) {
+                                if (nsg.rules && nsg.rules.length > 0) {
+                                    for (const rule of nsg.rules) {
+                                        findings.push({ check: "nsg-open-rule", severity: rule.destPort === "*" ? "critical" : "high", resource: `${nsg.name}/${rule.name}`, finding: `Inbound rule allows * source to port ${rule.destPort}`, resourceGroup: nsg.resourceGroup });
+                                    }
+                                }
+                            }
+                        });
+                        break;
+
+                    case "identity":
+                        await runCheck("broad-rbac", ["role", "assignment", "list", ...rgArgs, "--query", "[?roleDefinitionName=='Owner' || roleDefinitionName=='Contributor'].{principal:principalName, role:roleDefinitionName, scope:scope, principalType:principalType}", "-o", "json"], (assignments) => {
+                            for (const a of assignments) {
+                                if (a.scope && !a.scope.includes("/resourceGroups/")) {
+                                    findings.push({ check: "broad-rbac", severity: "high", resource: a.principal, finding: `${a.role} at subscription scope (${a.principalType})` });
+                                }
+                            }
+                        });
+                        break;
+
+                    case "data":
+                        await runCheck("storage-security", ["storage", "account", "list", ...rgArgs, "--query", "[].{name:name, allowBlobPublicAccess:allowBlobPublicAccess, httpsOnly:enableHttpsTrafficOnly, minimumTlsVersion:minimumTlsVersion, resourceGroup:resourceGroup}", "-o", "json"], (accounts) => {
+                            for (const a of accounts) {
+                                if (a.allowBlobPublicAccess) findings.push({ check: "public-blob", severity: "critical", resource: a.name, finding: "Blob public access enabled", resourceGroup: a.resourceGroup });
+                                if (!a.httpsOnly) findings.push({ check: "no-https", severity: "high", resource: a.name, finding: "HTTPS-only not enforced", resourceGroup: a.resourceGroup });
+                                if (a.minimumTlsVersion !== "TLS1_2") findings.push({ check: "old-tls", severity: "medium", resource: a.name, finding: `TLS version: ${a.minimumTlsVersion || "not set"}`, resourceGroup: a.resourceGroup });
+                            }
+                        });
+                        break;
+
+                    case "monitoring":
+                        await runCheck("resources-without-diag", ["resource", "list", ...rgArgs, "--query", "[?type!='Microsoft.Network/networkSecurityGroups' && type!='Microsoft.Network/publicIPAddresses'].{name:name, type:type, id:id}", "-o", "json"], (resources) => {
+                            // Note: full diagnostic settings check requires per-resource query — just report resource count
+                            findings.push({ check: "resource-count", severity: "info", finding: `${resources.length} resources found — use 'az monitor diagnostic-settings list --resource {id}' per resource to verify diagnostic settings` });
+                        });
+                        break;
+
+                    case "cost":
+                        await runCheck("unattached-disks", ["disk", "list", ...rgArgs, "--query", "[?diskState=='Unattached'].{name:name, sizeGb:diskSizeGb, sku:sku.name, resourceGroup:resourceGroup}", "-o", "json"], (disks) => {
+                            for (const d of disks) {
+                                findings.push({ check: "orphan-disk", severity: "medium", resource: d.name, finding: `Unattached ${d.sku} disk (${d.sizeGb} GB)`, resourceGroup: d.resourceGroup });
+                            }
+                        });
+                        await runCheck("stopped-vms", ["vm", "list", ...rgArgs, "-d", "--query", "[?powerState!='VM running'].{name:name, powerState:powerState, vmSize:hardwareProfile.vmSize, resourceGroup:resourceGroup}", "-o", "json"], (vms) => {
+                            for (const vm of vms) {
+                                if (vm.powerState !== "VM deallocated") {
+                                    findings.push({ check: "stopped-vm-billed", severity: "high", resource: vm.name, finding: `VM ${vm.powerState} but not deallocated — still billed for compute (${vm.vmSize})`, resourceGroup: vm.resourceGroup });
+                                }
+                            }
+                        });
+                        break;
+
+                    case "policy":
+                        await runCheck("policy-compliance", ["policy", "state", "summarize", ...rgArgs, "--query", "value[?results.nonCompliantResources > `0`].{policy:policyDefinitionName, nonCompliant:results.nonCompliantResources}", "-o", "json"], (policies) => {
+                            for (const p of policies) {
+                                findings.push({ check: "non-compliant", severity: "high", resource: p.policy, finding: `${p.nonCompliant} non-compliant resource(s)` });
+                            }
+                        });
+                        break;
+                }
+
+                const critical = findings.filter(f => f.severity === "critical").length;
+                const high = findings.filter(f => f.severity === "high").length;
+                const medium = findings.filter(f => f.severity === "medium").length;
+                const low = findings.filter(f => f.severity === "low").length;
+                const snippet = `${args.category}: ${critical} critical, ${high} high, ${medium} medium, ${low} low (${findings.length} total)`;
+
+                return JSON.stringify({
+                    category: args.category,
+                    scope: rgLabel,
+                    task_id: args.task_id,
+                    summary: { critical, high, medium, low, total: findings.length },
+                    findings,
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'audit-${sqlEscape(args.category)}', 'anvil_audit_scan', 'audit ${sqlEscape(args.category)} (scope: ${sqlEscape(rgLabel)})', 0, '${sqlEscape(snippet)}', ${critical === 0 ? 1 : 0});`,
                 }, null, 2);
             },
         },

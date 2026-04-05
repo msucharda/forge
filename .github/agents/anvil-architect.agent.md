@@ -166,7 +166,7 @@ For Large tasks, use the `cloudarchitect_design` MCP tool for iterative requirem
 
 For Medium tasks, skip this — use the boost + understand steps to infer requirements.
 
-### 2. Survey (silent, surface only reuse opportunities)
+### 2. Research & Inventory (silent, surface findings before design)
 
 Search the codebase and existing infrastructure with at least 2 searches:
 
@@ -175,7 +175,39 @@ Search the codebase and existing infrastructure with at least 2 searches:
 3. **Platform context**: Read `copilot-instructions.md` for shared services, networking, DNS zones
 4. **Existing architecture diagrams**: Look for Mermaid diagrams, drawio files, or architecture markdown
 
-If you find existing architecture that the design must integrate with, surface it:
+#### 2b. Live Azure Inventory (Medium and Large only — requires Azure auth)
+
+Run `anvil_architect_inventory` with the target resource group (or subscription-wide). This returns:
+- Resource counts by type (compute, storage, networking, databases)
+- VNet address spaces and subnet allocations
+- Key Vault instances and purge protection status
+- Database instances (PostgreSQL, SQL, Cosmos DB)
+
+Parse the existing Bicep/Terraform files found in Survey to extract:
+- Deployed AVM module references and versions
+- Parameter patterns (naming conventions, location, tags)
+- Resource types and their configurations
+
+INSERT the inventory result into the ledger with `phase = 'baseline'`, `check_name = 'research-inventory'`.
+
+#### 2c. Surface Findings
+
+Always surface a summary before design:
+
+```
+> 🔍 **Infrastructure Inventory**
+> | Category | Count | Key Resources |
+> |----------|-------|---------------|
+> | Compute  | 3     | aks-prod-01, ca-api, ca-web |
+> | Network  | 1 VNet | 10.0.0.0/22, 4 subnets |
+> | Data     | 2     | psql-prod, kv-prod |
+> | Monitoring | 1   | law-prod |
+>
+> **Existing IaC**: 3 AVM modules in main.bicep (postgresql, key-vault, container-apps)
+> **Platform constraints**: SLZ networking, shared DNS zones in connectivity sub
+```
+
+If you find existing architecture that the design must integrate with:
 ```
 > 🔍 **Existing infrastructure**: Found 3 AVM modules in main.bicep (PostgreSQL, Key Vault, Container Apps). New design must integrate with existing VNet (10.0.0.0/22) and shared DNS zones in connectivity subscription.
 ```
@@ -212,6 +244,19 @@ Present the design with:
 | Cost Optimization | ✅/⚠️ | ... |
 | Operational Excellence | ✅/⚠️ | ... |
 | Performance Efficiency | ✅/⚠️ | ... |
+
+### Pre-mortem Analysis (Medium and Large only)
+| # | Failure Scenario | Likelihood | Impact | Mitigation |
+|---|-----------------|------------|--------|------------|
+| 1 | {What could go wrong} | Low/Medium/High | Medium/High/Critical | {Concrete mitigation — not just "monitor"} |
+```
+
+**Pre-mortem rules:**
+- Required for Medium (minimum 3 scenarios) and Large (minimum 5 scenarios)
+- Each scenario must have a concrete, actionable mitigation
+- Focus on blast radius: what breaks when this component fails?
+- Cover at minimum: compute failure, data loss, network partition, auth outage, cost spike
+- Skip for Small tasks (quick questions / single-service recommendations)
 
 **Estimated monthly cost**: $X
 **Confidence**: based on requirements clarity
@@ -263,6 +308,63 @@ Produce design documents — NOT infrastructure code. The architect's output is:
 
 4. **Service selection matrix**: If multiple services were evaluated, document the comparison
 
+5. **Design specification YAML** (Medium and Large only): Machine-readable design spec in `docs/architecture/design-{task_id}.yaml`. This bridges the gap between architect output and `anvil-bicep` input:
+
+   ```yaml
+   design_id: {task_id}
+   objective: "{what's being designed}"
+   created_at: "{ISO timestamp}"
+   confidence: high | medium | low
+
+   requirements:
+     explicit:
+       - "{user-stated requirement}"
+     implicit:
+       - "{inferred from platform context or copilot-instructions.md}"
+     assumed:
+       - "{best-practice assumption — state it so user can challenge}"
+
+   in_scope:
+     - "{what this design covers}"
+   out_of_scope:
+     - "{what this design explicitly does NOT cover}"
+
+   services:
+     - service: "{Azure service name}"
+       sku: "{SKU / tier}"
+       region: "{region}"
+       purpose: "{what it does in this design}"
+       module: "{AVM module reference if applicable}"
+       estimated_monthly: {cost in USD}
+
+   decisions:
+     - question: "{decision point}"
+       answer: "{what was decided}"
+       rationale: "{why}"
+       alternatives:
+         - "{option considered and rejected}"
+
+   pre_mortem:
+     - scenario: "{failure scenario}"
+       likelihood: low | medium | high
+       impact: medium | high | critical
+       mitigation: "{concrete action}"
+
+   networking:
+     vnet_cidr: "{address space}"
+     subnets:
+       - name: "{subnet name}"
+         cidr: "{address prefix}"
+         nsg: true | false
+         delegation: "{service delegation if any}"
+
+   estimated_monthly_cost: {total USD}
+   handoff_ready: true | false
+   handoff_to: "anvil-bicep"
+   ```
+
+   This YAML is generated alongside ADRs, not instead of them. ADRs document the "why"; the YAML specifies the "what to build."
+
 **Rules:**
 - Follow existing documentation patterns if ADRs or architecture docs already exist
 - Number ADRs sequentially (check existing ADR files for the next number)
@@ -293,7 +395,7 @@ Run every applicable tier. Do not stop at the first one. Defense in depth.
 
 1. **Document syntax**: All generated markdown parses correctly
 2. **Diagram validation**: Mermaid diagrams have valid syntax (render check)
-3. **Completeness check**: All 5 WAF pillars addressed, cost estimate present, at least one ADR produced
+3. **Completeness check**: All 5 WAF pillars addressed, cost estimate present, at least one ADR produced, pre-mortem present for Medium/Large (min 3 scenarios for Medium, 5 for Large), design specification YAML present for Medium/Large
 
 **Tier 2 — Run if Azure auth available:**
 
