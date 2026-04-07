@@ -30,6 +30,58 @@ function sqlEscape(s) {
     return String(s).replace(/'/g, "''");
 }
 
+// ---------------------------------------------------------------------------
+// MCR (Microsoft Container Registry) helpers
+// ---------------------------------------------------------------------------
+
+const MCR_BASE = "https://mcr.microsoft.com/v2";
+const MCR_TIMEOUT_MS = 10_000;
+
+// In-memory caches (survive until extension reload on /clear)
+const _mcrCache = { catalog: null, tags: new Map() };
+const CATALOG_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const TAGS_TTL_MS = 5 * 60 * 1000;     // 5 minutes
+
+async function mcrFetch(url) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), MCR_TIMEOUT_MS);
+    try {
+        const resp = await fetch(url, { signal: ac.signal });
+        clearTimeout(timer);
+        if (!resp.ok) {
+            return { ok: false, error: resp.status === 404 ? "not_found" : `http_${resp.status}`, status: resp.status };
+        }
+        const data = await resp.json();
+        return { ok: true, data };
+    } catch (err) {
+        clearTimeout(timer);
+        if (err.name === "AbortError") return { ok: false, error: "timeout" };
+        return { ok: false, error: "network_error", detail: err.message };
+    }
+}
+
+function semverCompare(a, b) {
+    const pa = a.split(".").map(Number);
+    const pb = b.split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+}
+
+function normalizeAvmModule(input) {
+    let mod = String(input).trim();
+    // Strip br:mcr.microsoft.com/bicep/ prefix
+    mod = mod.replace(/^br:mcr\.microsoft\.com\/bicep\//, "");
+    // Strip br/public: prefix
+    mod = mod.replace(/^br\/public:/, "");
+    // Strip trailing :version
+    mod = mod.replace(/:[^:/]+$/, "");
+    // Validate it starts with avm/
+    if (!mod.startsWith("avm/")) return null;
+    return mod;
+}
+
 function isDangerousCommand(cmd) {
     // Check for recursive + force rm targeting root
     const hasRecursive = /\brm\b.*(?:-[^\s-]*r|-R|--recursive)/i.test(cmd);
@@ -93,6 +145,9 @@ const session = await joinSession({
             const readOnlyHint = (prompt.includes("diagnose") || prompt.includes("diagnosis") || prompt.includes("audit") || prompt.includes("compliance scan") || prompt.includes("landing zone") || prompt.includes("caf assess") || prompt.includes("lz assess"))
                 ? "\n⚠️ Diagnose/Audit/Landing Zone agents are READ-ONLY. Do not execute any mutating Azure commands (create/update/delete). Only use read/list/show/get commands."
                 : "";
+            const avmHint = (prompt.includes("avm") || prompt.includes("bicep module") || prompt.includes("azure verified module") || (prompt.includes("bicep") && prompt.includes("module")))
+                ? "\n💡 Check repo versions first. Use anvil_avm_latest for discovery/validation of AVM module versions — not for automatic upgrades. Use anvil_avm_search to find which AVM module exists for a resource type."
+                : "";
             return {
                 additionalContext: [
                     "Anvil extension is active. Custom tools available:",
@@ -102,6 +157,8 @@ const session = await joinSession({
                     "- anvil_bicep_lint: Bicep lint with structured output",
                     "- anvil_bicep_build: Bicep build (compile to ARM) with structured output",
                     "- anvil_bicep_param_check: cross-reference params vs .bicepparam files",
+                    "- anvil_avm_latest: look up latest AVM module version from MCR registry",
+                    "- anvil_avm_search: search AVM module catalog by keyword",
                     "- anvil_ops_check: pre-flight Azure auth, subscription, and Arc CLI check",
                     "- anvil_ops_inventory: list Arc-enabled servers with filtering",
                     "- anvil_ops_preview: dry-run preview for Arc operations",
@@ -119,6 +176,7 @@ const session = await joinSession({
                     "- anvil_lz_discover: discover landing zone topology (management group tree, subscription placement)",
                     "- anvil_lz_scan: run CAF alignment checks by category (topology/networking/identity/governance/security/monitoring)",
                     readOnlyHint,
+                    avmHint,
                 ].filter(Boolean).join("\n"),
             };
         },
@@ -540,6 +598,153 @@ const session = await joinSession({
                     required_params: requiredParams,
                     param_files: results,
                     all_ok: Object.values(results).every((r) => r.ok),
+                }, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // AVM (Azure Verified Modules) registry tools
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_avm_latest",
+            description: "Look up the latest version of an Azure Verified Module (AVM) from the MCR registry. " +
+                "Returns all available version tags sorted by semver, with the latest stable version highlighted. " +
+                "Use before writing any AVM module reference in Bicep. Accepts module paths like " +
+                "'avm/res/key-vault/vault', 'br/public:avm/res/key-vault/vault:0.11.0', or " +
+                "'br:mcr.microsoft.com/bicep/avm/res/key-vault/vault:0.11.0'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    module: {
+                        type: "string",
+                        description: "AVM module path (e.g., 'avm/res/key-vault/vault', 'avm/ptn/authorization/policy-assignment')",
+                    },
+                },
+                required: ["module"],
+            },
+            handler: async (args) => {
+                const mod = normalizeAvmModule(args.module);
+                if (!mod) {
+                    return JSON.stringify({ error: `Invalid module path: '${args.module}'. Must start with 'avm/' (e.g., 'avm/res/key-vault/vault').` });
+                }
+
+                // Check cache
+                const cached = _mcrCache.tags.get(mod);
+                if (cached && Date.now() < cached.expiry) {
+                    return JSON.stringify(cached.data, null, 2);
+                }
+
+                const result = await mcrFetch(`${MCR_BASE}/bicep/${mod}/tags/list`);
+                if (!result.ok) {
+                    if (result.error === "not_found") {
+                        return JSON.stringify({ error: `Module not found in MCR: ${mod}. Check the path or use anvil_avm_search to find available modules.` });
+                    }
+                    return JSON.stringify({ error: `MCR API error: ${result.error}${result.detail ? " — " + result.detail : ""}` });
+                }
+
+                const tags = result.data.tags || [];
+                const stableTags = tags.filter(t => !t.includes("-"));
+                const sortedAll = [...tags].sort(semverCompare);
+                const sortedStable = [...stableTags].sort(semverCompare);
+
+                const latestStable = sortedStable.length > 0 ? sortedStable[sortedStable.length - 1] : null;
+                const latestAny = sortedAll.length > 0 ? sortedAll[sortedAll.length - 1] : null;
+
+                const data = {
+                    module: mod,
+                    latest: latestStable || latestAny,
+                    ...(latestAny !== latestStable && latestAny ? { latest_prerelease: latestAny } : {}),
+                    bicep_reference: `br/public:${mod}:${latestStable || latestAny}`,
+                    all_versions: sortedAll,
+                    total_versions: sortedAll.length,
+                };
+
+                // Cache result
+                _mcrCache.tags.set(mod, { data, expiry: Date.now() + TAGS_TTL_MS });
+                return JSON.stringify(data, null, 2);
+            },
+        },
+        {
+            name: "anvil_avm_search",
+            description: "Search the AVM module catalog in the MCR registry by keyword. " +
+                "Returns matching module paths with their latest versions. " +
+                "Use to discover which AVM module exists for a given Azure resource type.",
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description: "Search term (e.g., 'storage', 'key-vault', 'postgresql', 'container-registry')",
+                    },
+                },
+                required: ["query"],
+            },
+            handler: async (args) => {
+                let query = String(args.query).toLowerCase().trim();
+                if (!query) return JSON.stringify({ error: "Search query is required." });
+
+                // Normalize Azure resource type names to AVM-style slugs
+                // e.g., "Microsoft.KeyVault/vaults" → "key-vault/vault"
+                // e.g., "Microsoft.Storage/storageAccounts" → "storage/storage-account"
+                query = query
+                    .replace(/^microsoft\./i, "")           // strip provider prefix
+                    .replace(/\//g, "/")                     // keep slashes
+                    .replace(/([a-z])([A-Z])/g, "$1-$2")    // camelCase → kebab-case
+                    .toLowerCase();
+
+                // Fetch catalog (with cache)
+                let repos;
+                if (_mcrCache.catalog && Date.now() < _mcrCache.catalog.expiry) {
+                    repos = _mcrCache.catalog.data;
+                } else {
+                    // Fetch with pagination support
+                    let allRepos = [];
+                    let url = `${MCR_BASE}/_catalog?n=10000`;
+                    for (let page = 0; page < 5; page++) {
+                        const result = await mcrFetch(url);
+                        if (!result.ok) {
+                            return JSON.stringify({ error: `MCR catalog error: ${result.error}${result.detail ? " — " + result.detail : ""}` });
+                        }
+                        allRepos = allRepos.concat(result.data.repositories || []);
+                        // No standard Link header in MCR _catalog — stop if no more
+                        break;
+                    }
+                    repos = allRepos.filter(r => r.startsWith("bicep/avm/"));
+                    _mcrCache.catalog = { data: repos, expiry: Date.now() + CATALOG_TTL_MS };
+                }
+
+                // Filter by query
+                const matches = repos.filter(r => r.includes(query));
+                const totalMatches = matches.length;
+                const top = matches.slice(0, 10);
+
+                // Fetch latest version for each match in parallel
+                const results = await Promise.all(top.map(async (repo) => {
+                    const mod = repo.replace("bicep/", "");
+                    // Check tags cache
+                    const cached = _mcrCache.tags.get(mod);
+                    if (cached && Date.now() < cached.expiry) {
+                        return { module: mod, latest: cached.data.latest, reference: cached.data.bicep_reference };
+                    }
+                    const tagResult = await mcrFetch(`${MCR_BASE}/${repo}/tags/list`);
+                    if (!tagResult.ok) return { module: mod, latest: null, error: tagResult.error };
+                    const tags = (tagResult.data.tags || []).filter(t => !t.includes("-"));
+                    const sorted = tags.sort(semverCompare);
+                    const latest = sorted.length > 0 ? sorted[sorted.length - 1] : null;
+                    // Populate tags cache
+                    const allSorted = [...(tagResult.data.tags || [])].sort(semverCompare);
+                    _mcrCache.tags.set(mod, {
+                        data: { module: mod, latest, bicep_reference: `br/public:${mod}:${latest}`, all_versions: allSorted, total_versions: allSorted.length },
+                        expiry: Date.now() + TAGS_TTL_MS,
+                    });
+                    return { module: mod, latest, reference: `br/public:${mod}:${latest}` };
+                }));
+
+                return JSON.stringify({
+                    query,
+                    matches: results,
+                    total_matches: totalMatches,
+                    showing: top.length,
                 }, null, 2);
             },
         },
