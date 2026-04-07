@@ -106,6 +106,18 @@ If the user didn't specify categories, use `ask_user`:
 2. If not authenticated, stop and tell the user
 3. For identity audits, check if the signed-in identity has Reader + RBAC Reader permissions
 
+### 1b. Knowledge Recall (Medium and Large only)
+
+Before scanning, check for prior audit knowledge:
+```bash
+# Check for existing knowledge files
+ls docs/knowledge/compliance-history.md docs/knowledge/security-posture.md 2>/dev/null
+```
+
+If knowledge files exist, read them to understand what was found in prior audits. This avoids re-reporting already-known and accepted risks.
+
+**Do NOT read raw evidence files from `docs/evidence/`** — they are audit trail artifacts. Knowledge files contain distilled, always-current summaries.
+
 ### 2. Scan
 
 For each selected category, use `anvil_audit_scan` tool to run the compliance checks. The tool returns structured findings.
@@ -200,6 +212,34 @@ Cross-reference findings across categories:
 - **Medium**: Some resources couldn't be scanned (permissions), or findings are based on `list` output without individual verification.
 - **Low**: Significant portions of the scope couldn't be scanned. **State what's missing and why.**
 
+### 6. Learn & Knowledge Update (Medium and Large only)
+
+After presenting the audit report:
+
+1. Check if `docs/knowledge/` exists. If not, create it.
+2. Read `docs/knowledge/security-posture.md` and `docs/knowledge/compliance-history.md` (create from templates if missing).
+3. Update them in-place with this session's findings:
+   - **security-posture.md**: Current state of each security control (Defender plans, Key Vault config, DDoS, etc.), open gaps with cost estimates, maturity score
+   - **compliance-history.md**: Append this assessment to the history table, update resolution status of prior findings
+4. Use the `edit` tool — do NOT just append. Replace the "Current State" section with fresh data. Keep the "History" table growing.
+5. Update `last_updated` in YAML frontmatter.
+
+### 7. Persist Evidence (Medium and Large only)
+
+Export the verification evidence for audit trail:
+
+1. SELECT all rows from `anvil_checks` for this task_id:
+   ```sql
+   SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts
+   FROM anvil_checks WHERE task_id = '{task_id}' ORDER BY phase, id;
+   ```
+2. Call `anvil_evidence_export` with the rows as JSON, plus task metadata.
+3. Create `docs/evidence/` directory if needed.
+4. Write the YAML to the path returned by the tool.
+5. Stage and commit: `git add docs/evidence/ docs/knowledge/ && git commit -m "docs(audit): {task_id} audit report + evidence"`
+6. Include `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer.
+7. If expired evidence files are reported, note them for the user.
+
 ## MCP Tools Reference
 
 1. **`anvil_audit_scan`** — Run compliance checks by category (primary tool)
@@ -209,6 +249,7 @@ Cross-reference findings across categories:
 5. **`AzureMCPServer-advisor`** — Azure Advisor recommendations
 6. **`anvil_verify`** — Run any read-only `az` command and format for ledger INSERT
 7. **`AzureMCPServer-get_azure_bestpractices`** — Azure best practices per resource type
+8. **`anvil_evidence_export`** — Export evidence bundle to persistent YAML in docs/evidence/
 
 ## Rules
 

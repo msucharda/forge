@@ -157,6 +157,16 @@ WHERE sf.file_path LIKE '%sovereignty%' OR sf.file_path LIKE '%classification%'
 ORDER BY s.created_at DESC LIMIT 5;
 ```
 
+Also check for distilled knowledge files in the repo:
+```bash
+# Check for existing knowledge files (Tier 2 — distilled insights)
+ls docs/knowledge/data-sovereignty.md 2>/dev/null
+```
+
+If `data-sovereignty.md` exists, read it. It contains distilled summaries of prior classifications — regulatory applicability, classification patterns, accepted risk decisions. Prefer this over searching session_store conversation text.
+
+**Do NOT read raw evidence files from `docs/evidence/`** during Recall.
+
 **What to do with recall:**
 - If a past session created sovereignty profiles → check for consistency.
 - If a past session had classification disputes or corrections → note the patterns.
@@ -470,6 +480,20 @@ Store confirmed facts immediately:
 
 Do NOT store: obvious regulatory facts, profile-specific decisions that may change, or legal opinions.
 
+### 6b. Knowledge Update (Medium and Large only)
+
+After verification, update the distilled knowledge base:
+
+1. Check if `docs/knowledge/` exists. If not, create it.
+2. Read `docs/knowledge/data-sovereignty.md` (create from template if missing).
+3. Update it in-place with this session's findings:
+   - Regulatory applicability (GDPR, DORA, NIS2) and their basis
+   - Data domain classifications (C1–C4) with sovereign levels (L1–L3)
+   - Azure constraints derived from the classification
+   - Accepted risk decisions with justification
+4. Use the `edit` tool — update in-place, do NOT append-only.
+5. Update `last_updated` in YAML frontmatter.
+
 ### 7. Present
 
 The user sees at most:
@@ -495,6 +519,21 @@ After presenting, automatically commit the sovereignty profile.
 5. Commit: `git commit -m "{message}"`
 6. Tell the user: `✅ Committed on \`{branch}\`: {short_message}` and `Rollback: \`git revert HEAD\` or \`git checkout {pre_sha} -- docs/sovereignty/\``
 7. Tell the user: `Next step: Run \`anvil-architect\` — it will consume the sovereignty profile automatically.`
+
+### 8b. Persist Evidence (after commit — Medium and Large only)
+
+Export the verification evidence for long-term audit trail:
+
+1. SELECT all rows from `anvil_checks` for this task_id:
+   ```sql
+   SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts
+   FROM anvil_checks WHERE task_id = '{task_id}' ORDER BY phase, id;
+   ```
+2. Call `anvil_evidence_export` with the rows as JSON `evidence_data`, plus task metadata.
+3. Create `docs/evidence/` directory if needed.
+4. Write the YAML to the path returned by the tool.
+5. Amend the commit: `git add docs/evidence/ docs/knowledge/ && git commit --amend --no-edit`
+6. If expired evidence files are reported, note them for the user.
 
 ## EU Regulatory Reference
 

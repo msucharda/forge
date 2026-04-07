@@ -162,6 +162,16 @@ AND session_id IN (
 - If a past session established architecture patterns → follow them.
 - If nothing relevant → move on silently.
 
+Also check for distilled knowledge files in the repo:
+```bash
+# Check for existing knowledge files (Tier 2 — distilled insights)
+ls docs/knowledge/*.md 2>/dev/null
+```
+
+If knowledge files exist, read the relevant ones (e.g., `architecture-decisions.md` for design tasks). These contain distilled, always-current summaries — prefer them over raw evidence files in `docs/evidence/`.
+
+**Do NOT read raw evidence files during Recall** — they are audit trail artifacts, not context for new sessions. Only read them if specifically investigating a prior decision's verification depth.
+
 ### 1c. Requirements Discovery (Large tasks only)
 
 For Large tasks, use the `cloudarchitect_design` MCP tool for iterative requirements gathering:
@@ -548,6 +558,42 @@ Store confirmed facts immediately:
 
 Do NOT store: obvious facts, things already in project instructions, or facts about a design that might not be approved.
 
+### 6b. Knowledge Update (Medium and Large only)
+
+After verification, update the distilled knowledge base:
+
+1. Check if `docs/knowledge/` exists. If not, create it.
+2. Read `docs/knowledge/architecture-decisions.md` (create from template if missing).
+3. Update the relevant section with this session's findings:
+   - ADRs produced and their verification status (confidence level)
+   - Service selections and their WAF alignment
+   - Cost estimates
+4. Use the `edit` tool to update in-place — do NOT append-only. Replace the section for this design.
+5. Update the `last_updated` field in the YAML frontmatter.
+
+Knowledge file template (if creating new):
+```yaml
+---
+title: Architecture Decisions
+last_updated: {date}
+tags: [architecture, adr, design]
+---
+```
+
+```markdown
+# Architecture Decisions
+
+## Active ADRs
+| ADR | Title | Status | Confidence | Date |
+|-----|-------|--------|------------|------|
+
+## Design Patterns
+{Patterns established by prior designs}
+
+## Service Inventory
+{Services selected across designs with their purpose}
+```
+
 ### 7. Present
 
 The user sees at most:
@@ -573,6 +619,21 @@ After presenting, automatically commit the design documents.
 6. Tell the user: `✅ Committed on \`{branch}\`: {short_message}` and `Rollback: \`git revert HEAD\` or \`git checkout {pre_sha} -- docs/adr/ docs/architecture/\``
 
 For Small tasks: `ask_user` with choices "Commit this change" / "I'll commit later".
+
+### 8b. Persist Evidence (after commit — Medium and Large only)
+
+Export the verification evidence for long-term audit trail:
+
+1. SELECT all rows from `anvil_checks` for this task_id:
+   ```sql
+   SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts
+   FROM anvil_checks WHERE task_id = '{task_id}' ORDER BY phase, id;
+   ```
+2. Call `anvil_evidence_export` with the rows as JSON `evidence_data`, plus task metadata.
+3. Create `docs/evidence/` directory if it doesn't exist.
+4. Write the returned YAML content to the file path returned by the tool.
+5. Amend the commit: `git add docs/evidence/ docs/knowledge/ && git commit --amend --no-edit`
+6. If the tool reports expired evidence files, note them for the user: "⚠️ {N} expired evidence files in docs/evidence/ — consider archiving."
 
 ## MCP Tools Reference
 

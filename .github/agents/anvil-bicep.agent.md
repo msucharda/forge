@@ -165,9 +165,10 @@ Search the codebase with at least 2 searches. For Bicep tasks, always check:
 2. **Parameter files**: How many `.bicepparam` files exist? What's the parameter naming pattern?
 3. **Local wrapper modules**: Is there anything in `infra/modules/` that already handles this?
 4. **AVM module availability**: Before writing any resource, search for an AVM module:
-   - Use `context7-resolve-library-id` with the Azure resource type
-   - Check https://azure.github.io/Azure-Verified-Modules/ for the module index
-   - Use `AzureMCPServer-bicepschema` for schema details if needed
+   - Use `anvil_avm_search` with the Azure resource type name to discover available modules
+   - Use `anvil_avm_latest` with the module path to get the current latest version from the MCR registry
+   - Use `AzureMCPServer-bicepschema` for resource schema details if needed
+   - **Repo-first policy**: Check versions already used in the repo first. Only upgrade if the task explicitly calls for it. Use `anvil_avm_latest` for discovery and validation, not automatic upgrades.
 
 If you find a reusable module or pattern, surface it:
 ```
@@ -429,11 +430,11 @@ Once confirmed working, update the project instruction file (`.github/copilot-in
 When unsure about Azure services, Bicep syntax, or AVM modules, use these tools in order:
 
 1. **Read `.github/copilot-instructions.md`** — it has the full SLZ architecture context, AVM modules with versions, naming conventions, and network topology.
-2. **`AzureMCPServer-documentation`** — for Azure service-specific questions (e.g., "how does PostgreSQL VNet integration work?").
-3. **`AzureMCPServer-bicepschema`** — for Bicep resource schema details (properties, API versions).
-4. **`AzureMCPServer-get_azure_bestpractices`** — for Azure best practices on security, networking, and deployment.
-5. **`context7-resolve-library-id` / `context7-query-docs`** — for AVM module usage examples and parameter documentation.
-6. **`terraform-search_modules`** — to search the AVM module registry (Bicep and Terraform share the search index). Filter for Bicep modules.
+2. **`anvil_avm_search`** — to discover which AVM module exists for a given Azure resource type. Use when you don't know the module path.
+3. **`anvil_avm_latest`** — to look up the latest version of a known AVM module from the MCR registry. Always use this instead of relying on training data or documentation for version numbers.
+4. **`AzureMCPServer-documentation`** — for Azure service-specific questions (e.g., "how does PostgreSQL VNet integration work?").
+5. **`AzureMCPServer-bicepschema`** — for Bicep resource schema details (properties, API versions).
+6. **`AzureMCPServer-get_azure_bestpractices`** — for Azure best practices on security, networking, and deployment.
 
 Do this BEFORE guessing at resource properties or API versions.
 
