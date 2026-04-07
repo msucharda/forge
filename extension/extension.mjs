@@ -90,8 +90,8 @@ const session = await joinSession({
 
         onUserPromptSubmitted: async (input) => {
             const prompt = String(input.userPrompt || "").toLowerCase();
-            const readOnlyHint = (prompt.includes("diagnose") || prompt.includes("diagnosis") || prompt.includes("audit") || prompt.includes("compliance scan"))
-                ? "\n⚠️ Diagnose/Audit agents are READ-ONLY. Do not execute any mutating Azure commands (create/update/delete). Only use read/list/show/get commands."
+            const readOnlyHint = (prompt.includes("diagnose") || prompt.includes("diagnosis") || prompt.includes("audit") || prompt.includes("compliance scan") || prompt.includes("landing zone") || prompt.includes("caf assess") || prompt.includes("lz assess"))
+                ? "\n⚠️ Diagnose/Audit/Landing Zone agents are READ-ONLY. Do not execute any mutating Azure commands (create/update/delete). Only use read/list/show/get commands."
                 : "";
             return {
                 additionalContext: [
@@ -114,6 +114,9 @@ const session = await joinSession({
                     "- anvil_sovereign_check: pre-flight check for sovereignty classification tasks",
                     "- anvil_sovereign_validate: validate sovereignty profile YAML for consistency",
                     "- anvil_audit_scan: run Azure compliance checks by category (network/identity/data/monitoring/cost/policy)",
+                    "- anvil_lz_check: pre-flight Azure auth + tenant + management group access for LZ assessment",
+                    "- anvil_lz_discover: discover landing zone topology (management group tree, subscription placement)",
+                    "- anvil_lz_scan: run CAF alignment checks by category (topology/networking/identity/governance/security/monitoring)",
                     readOnlyHint,
                 ].filter(Boolean).join("\n"),
             };
@@ -1249,6 +1252,490 @@ const session = await joinSession({
                     summary: { critical, high, medium, low, total: findings.length },
                     findings,
                     sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'audit-${sqlEscape(args.category)}', 'anvil_audit_scan', 'audit ${sqlEscape(args.category)} (scope: ${sqlEscape(rgLabel)})', 0, '${sqlEscape(snippet)}', ${critical === 0 ? 1 : 0});`,
+                }, null, 2);
+            },
+        },
+
+        // ---------------------------------------------------------------
+        // Landing Zone CAF assessment tools
+        // ---------------------------------------------------------------
+        {
+            name: "anvil_lz_check",
+            description: "Pre-flight check for CAF landing zone assessment: verify Azure auth, tenant-level access, and management group read permissions. Run before starting any landing zone assessment task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug (e.g., lz-assess-full)" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                const checks = {};
+
+                // Azure auth
+                const auth = await shell("az", ["account", "show", "-o", "json"]);
+                if (!auth.ok) {
+                    return JSON.stringify({ error: "Not authenticated to Azure. Run 'az login' first.", passed: false }, null, 2);
+                }
+                let account;
+                try { account = JSON.parse(auth.stdout); } catch { account = {}; }
+                checks.subscription = account.name || "unknown";
+                checks.subscription_id = account.id || "unknown";
+                checks.tenant_id = account.tenantId || "unknown";
+                checks.user = account.user?.name || "unknown";
+
+                // Management group access
+                const mgResult = await shell("az", ["account", "management-group", "list", "-o", "json"]);
+                checks.management_group_access = mgResult.ok;
+                if (mgResult.ok) {
+                    let mgs;
+                    try { mgs = JSON.parse(mgResult.stdout || "[]"); } catch { mgs = []; }
+                    checks.management_group_count = mgs.length;
+                } else {
+                    checks.management_group_error = (mgResult.stderr || "").slice(0, 200);
+                }
+
+                // Check for copilot-instructions
+                const cwd = process.cwd();
+                checks.copilot_instructions = existsSync(join(cwd, ".github", "copilot-instructions.md"));
+                checks.sovereignty_profiles = existsSync(join(cwd, "docs", "sovereignty"));
+                checks.caf_docs = existsSync(join(cwd, "docs", "caf"));
+                checks.adr_docs = existsSync(join(cwd, "docs", "adr"));
+
+                return JSON.stringify({
+                    ...checks,
+                    passed: auth.ok && mgResult.ok,
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'lz-preflight', 'anvil_lz_check', 'az account show + management-group list', 0, 'tenant: ${sqlEscape(checks.tenant_id)}, MGs: ${checks.management_group_count || "N/A"}, sub: ${sqlEscape(checks.subscription)}', ${auth.ok && mgResult.ok ? 1 : 0});`,
+                }, null, 2);
+            },
+        },
+        {
+            name: "anvil_lz_discover",
+            description: "Discover landing zone topology: management group hierarchy tree, subscription placement, hub/connectivity identification. Returns structured topology for CAF alignment assessment.",
+            parameters: {
+                type: "object",
+                properties: {
+                    root_mg: { type: "string", description: "Root management group ID to start from (optional — auto-detects tenant root if omitted)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["task_id"],
+            },
+            handler: async (args) => {
+                // Get all management groups
+                const mgResult = await shell("az", ["account", "management-group", "list", "--query", "[].{id:id, name:name, displayName:displayName, parentId:properties.details.parent.id}", "-o", "json"]);
+                if (!mgResult.ok) {
+                    return JSON.stringify({ error: `Management group query failed: ${(mgResult.stderr || "").slice(0, 300)}`, passed: false }, null, 2);
+                }
+                let mgs;
+                try { mgs = JSON.parse(mgResult.stdout || "[]"); } catch { mgs = []; }
+
+                // Get subscriptions with their MG placement by querying each MG for children
+                // az account list doesn't reliably return managementGroupAncestors, so we
+                // query each MG with --expand to find its child subscriptions
+                const subResult = await shell("az", ["account", "list", "--query", "[].{id:id, name:name, state:state, tenantId:tenantId}", "-o", "json"]);
+                let subs = [];
+                if (subResult.ok) {
+                    try { subs = JSON.parse(subResult.stdout || "[]"); } catch { /* empty */ }
+                }
+
+                // Build tree structure
+                const mgMap = {};
+                for (const mg of mgs) {
+                    mgMap[mg.id] = { ...mg, children: [], subscriptions: [] };
+                }
+
+                // Find root(s) and build parent→child edges
+                const roots = [];
+                for (const mg of mgs) {
+                    if (mg.parentId && mgMap[mg.parentId]) {
+                        mgMap[mg.parentId].children.push(mg.id);
+                    } else {
+                        roots.push(mg.id);
+                    }
+                }
+
+                // Query each MG for child subscriptions (expand=children returns subs)
+                const subToMg = {};
+                for (const mg of mgs) {
+                    const showResult = await shell("az", ["account", "management-group", "show", "--name", mg.name, "--expand", "--query", "children[?type=='Microsoft.Management/managementGroups/subscriptions'].{id:name, displayName:displayName}", "-o", "json"]);
+                    if (showResult.ok) {
+                        let children;
+                        try { children = JSON.parse(showResult.stdout || "[]"); } catch { children = []; }
+                        if (Array.isArray(children)) {
+                            for (const child of children) {
+                                if (child.id) subToMg[child.id] = mg.name;
+                            }
+                        }
+                    }
+                }
+
+                // Identify hub/connectivity subscriptions by naming patterns
+                const hubPatterns = /\b(hub|connectivity|network|platform|shared)\b/i;
+                const identityPatterns = /\b(identity|aad|entra)\b/i;
+                const mgmtPatterns = /\b(management|monitor|logging|operations)\b/i;
+
+                const classifiedSubs = subs.map(s => {
+                    let type = "workload";
+                    const name = (s.name || "").toLowerCase();
+                    if (hubPatterns.test(name)) type = "connectivity";
+                    else if (identityPatterns.test(name)) type = "identity";
+                    else if (mgmtPatterns.test(name)) type = "management";
+                    return { ...s, lz_type: type, managementGroup: subToMg[s.id] || "unknown" };
+                });
+
+                const platformCount = classifiedSubs.filter(s => s.lz_type !== "workload").length;
+                const workloadCount = classifiedSubs.filter(s => s.lz_type === "workload").length;
+                const maxDepth = mgs.length > 0 ? Math.max(...mgs.map(mg => {
+                    let depth = 0;
+                    let current = mg;
+                    while (current.parentId && mgMap[current.parentId]) {
+                        depth++;
+                        current = mgMap[current.parentId];
+                    }
+                    return depth;
+                })) : 0;
+
+                // Build text tree visualization
+                const buildTree = (mgId, indent = "") => {
+                    const mg = mgMap[mgId];
+                    if (!mg) return "";
+                    let tree = `${indent}📁 ${mg.displayName || mg.name} (${mg.name})\n`;
+                    const mgSubs = classifiedSubs.filter(s => s.managementGroup === mg.name);
+                    for (const sub of mgSubs) {
+                        const icon = sub.lz_type === "workload" ? "📄" : "⚙️";
+                        tree += `${indent}  ${icon} ${sub.name} [${sub.lz_type}] (${sub.state})\n`;
+                    }
+                    for (const childId of mg.children) {
+                        tree += buildTree(childId, indent + "  ");
+                    }
+                    return tree;
+                };
+
+                let treeViz = "";
+                for (const rootId of roots) {
+                    treeViz += buildTree(rootId);
+                }
+
+                const snippet = `${mgs.length} MGs (depth ${maxDepth}), ${subs.length} subs (${platformCount} platform, ${workloadCount} workload)`;
+
+                return JSON.stringify({
+                    management_groups: mgs.length,
+                    max_depth: maxDepth,
+                    subscriptions: { total: subs.length, platform: platformCount, workload: workloadCount },
+                    tree: treeViz.trim(),
+                    management_group_list: mgs.map(mg => ({ name: mg.name, displayName: mg.displayName, parentId: mg.parentId })),
+                    subscription_list: classifiedSubs.map(s => ({ name: s.name, id: s.id, state: s.state, lz_type: s.lz_type, managementGroup: s.managementGroup })),
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'baseline', 'lz-topology', 'anvil_lz_discover', 'az account management-group list + account list', 0, '${sqlEscape(snippet)}', 1);`,
+                }, null, 2);
+            },
+        },
+        {
+            name: "anvil_lz_scan",
+            description: "Run CAF alignment checks for a specific landing zone category (topology, networking, identity, governance, security, monitoring). Returns structured findings with maturity score for the assessment report. Read-only — never modifies resources.",
+            parameters: {
+                type: "object",
+                properties: {
+                    category: { type: "string", enum: ["topology", "networking", "identity", "governance", "security", "monitoring"], description: "CAF assessment category to scan" },
+                    subscription: { type: "string", description: "Target subscription ID or name (optional — uses current subscription if omitted)" },
+                    resource_group: { type: "string", description: "Scope to a resource group (optional — scans subscription if omitted)" },
+                    task_id: { type: "string", description: "Task ID for the ledger" },
+                },
+                required: ["category", "task_id"],
+            },
+            handler: async (args) => {
+                const subArgs = args.subscription ? ["--subscription", args.subscription] : [];
+                const rgArgs = args.resource_group ? ["--resource-group", args.resource_group] : [];
+                const scopeLabel = args.resource_group || args.subscription || "(current subscription)";
+                const findings = [];
+                const controlScores = [];
+
+                // runCheck appends subArgs by default; pass { noSub: true } to skip for tenant-scoped commands
+                const runCheck = async (name, azArgs, assessFn, opts = {}) => {
+                    const extraArgs = opts.noSub ? [] : subArgs;
+                    const result = await shell("az", [...azArgs, ...extraArgs]);
+                    if (!result.ok) {
+                        findings.push({ check: name, severity: "info", finding: `Query failed: ${(result.stderr || "").slice(0, 200)}` });
+                        return;
+                    }
+                    let data;
+                    try { data = JSON.parse(result.stdout || "[]"); } catch { return; }
+                    if (Array.isArray(data)) assessFn(data);
+                    else assessFn([data]);
+                };
+
+                switch (args.category) {
+                    case "topology": {
+                        // Management group hierarchy assessment — tenant-scoped, no --subscription
+                        await runCheck("mg-hierarchy", ["account", "management-group", "list", "--query", "[].{name:name, displayName:displayName, parentId:properties.details.parent.id}", "-o", "json"], (mgs) => {
+                            if (mgs.length <= 1) {
+                                findings.push({ check: "flat-hierarchy", severity: "critical", finding: `Only ${mgs.length} management group(s) — no hierarchy structure. CAF recommends at least: Root → Platform + Landing Zones + Decommissioned` });
+                                controlScores.push(1);
+                            } else if (mgs.length <= 3) {
+                                findings.push({ check: "shallow-hierarchy", severity: "high", finding: `${mgs.length} management groups — basic structure but missing CAF recommended groups (Platform/Connectivity/Identity/Management/Landing Zones/Online/Corp)` });
+                                controlScores.push(2);
+                            } else {
+                                // Check for CAF-standard MG names
+                                const names = mgs.map(mg => (mg.displayName || mg.name || "").toLowerCase());
+                                const cafMGs = ["platform", "landing zones", "connectivity", "identity", "management", "decommissioned", "sandbox"];
+                                const found = cafMGs.filter(c => names.some(n => n.includes(c)));
+                                const missing = cafMGs.filter(c => !names.some(n => n.includes(c)));
+                                if (found.length >= 4) {
+                                    controlScores.push(4);
+                                    if (missing.length > 0) {
+                                        findings.push({ check: "mg-partial-caf", severity: "medium", finding: `CAF MG structure mostly in place (${found.join(", ")}). Missing: ${missing.join(", ")}` });
+                                    } else {
+                                        controlScores.push(5);
+                                        findings.push({ check: "mg-full-caf", severity: "info", finding: `Full CAF management group structure detected: ${found.join(", ")}` });
+                                    }
+                                } else if (found.length >= 2) {
+                                    controlScores.push(3);
+                                    findings.push({ check: "mg-partial-caf", severity: "high", finding: `Partial CAF structure (${found.join(", ")}). Missing: ${missing.join(", ")}` });
+                                } else {
+                                    controlScores.push(2);
+                                    findings.push({ check: "mg-non-caf", severity: "high", finding: `${mgs.length} management groups but names don't follow CAF convention. Found: ${names.slice(0, 5).join(", ")}` });
+                                }
+                            }
+                        }, { noSub: true });
+
+                        // Subscription count and placement — tenant-scoped
+                        await runCheck("sub-placement", ["account", "list", "--query", "[].{name:name, state:state}", "-o", "json"], (subs) => {
+                            const active = subs.filter(s => s.state === "Enabled");
+                            findings.push({ check: "sub-count", severity: "info", finding: `${active.length} active subscription(s) out of ${subs.length} total` });
+                        }, { noSub: true });
+                        break;
+                    }
+
+                    case "networking": {
+                        // VNet discovery
+                        await runCheck("vnets", ["network", "vnet", "list", ...rgArgs, "--query", "[].{name:name, addressSpace:addressSpace.addressPrefixes[0], subnets:subnets[].name, resourceGroup:resourceGroup, location:location}", "-o", "json"], (vnets) => {
+                            if (vnets.length === 0) {
+                                findings.push({ check: "no-vnets", severity: "critical", finding: "No VNets found — no network infrastructure" });
+                                controlScores.push(1);
+                            } else {
+                                findings.push({ check: "vnet-count", severity: "info", finding: `${vnets.length} VNet(s) found` });
+                                const hubCandidates = vnets.filter(v => /\b(hub|connectivity|shared)\b/i.test(v.name));
+                                if (hubCandidates.length > 0) {
+                                    controlScores.push(3);
+                                    findings.push({ check: "hub-vnet", severity: "info", finding: `Hub VNet candidate(s): ${hubCandidates.map(v => v.name).join(", ")}` });
+                                } else {
+                                    findings.push({ check: "no-hub-vnet", severity: "high", finding: "No hub VNet detected (naming pattern: hub/connectivity/shared). CAF recommends a centralized hub for network traffic management" });
+                                    controlScores.push(2);
+                                }
+                            }
+                        });
+
+                        // VNet peerings
+                        await runCheck("peerings", ["network", "vnet", "list", ...rgArgs, "--query", "[].{name:name, peerings:virtualNetworkPeerings[].{name:name, state:peeringState, remote:remoteVirtualNetwork.id}}", "-o", "json"], (vnets) => {
+                            const peered = vnets.filter(v => v.peerings && v.peerings.length > 0);
+                            if (peered.length > 0) {
+                                controlScores.push(3);
+                                findings.push({ check: "peering-exists", severity: "info", finding: `${peered.length} VNet(s) with peering configured` });
+                            } else if (vnets.length > 1) {
+                                findings.push({ check: "no-peering", severity: "high", finding: `${vnets.length} VNets but no peering — spoke VNets can't communicate via hub` });
+                            }
+                        });
+
+                        // Azure Firewall
+                        await runCheck("firewall", ["network", "firewall", "list", ...rgArgs, "--query", "[].{name:name, sku:sku.name, tier:sku.tier, threatIntel:threatIntelMode, resourceGroup:resourceGroup}", "-o", "json"], (fws) => {
+                            if (fws.length > 0) {
+                                controlScores.push(4);
+                                findings.push({ check: "firewall-exists", severity: "info", finding: `Azure Firewall: ${fws.map(f => `${f.name} (${f.tier || "Standard"})`).join(", ")}` });
+                            } else {
+                                findings.push({ check: "no-firewall", severity: "medium", finding: "No Azure Firewall detected. CAF recommends centralized firewall in hub for traffic inspection" });
+                            }
+                        });
+
+                        // Private DNS zones
+                        await runCheck("private-dns", ["network", "private-dns", "zone", "list", "--query", "[].{name:name, numberOfRecordSets:numberOfRecordSets, resourceGroup:resourceGroup}", "-o", "json"], (zones) => {
+                            if (zones.length > 0) {
+                                controlScores.push(3);
+                                findings.push({ check: "private-dns", severity: "info", finding: `${zones.length} private DNS zone(s): ${zones.slice(0, 5).map(z => z.name).join(", ")}${zones.length > 5 ? "..." : ""}` });
+                            } else {
+                                findings.push({ check: "no-private-dns", severity: "medium", finding: "No private DNS zones — private endpoints won't resolve correctly without private DNS" });
+                            }
+                        });
+                        break;
+                    }
+
+                    case "identity": {
+                        // Broad RBAC at subscription scope
+                        await runCheck("rbac-breadth", ["role", "assignment", "list", "--all", "--query", "[?!contains(scope, '/resourceGroups/')].{principal:principalName, role:roleDefinitionName, type:principalType, scope:scope}", "-o", "json"], (assignments) => {
+                            const owners = assignments.filter(a => a.role === "Owner");
+                            const contributors = assignments.filter(a => a.role === "Contributor");
+                            if (owners.length > 3) {
+                                findings.push({ check: "excessive-owners", severity: "critical", finding: `${owners.length} Owner assignments at subscription scope — CAF recommends max 2-3 Owners` });
+                            } else if (owners.length > 0) {
+                                findings.push({ check: "owner-count", severity: "info", finding: `${owners.length} Owner assignment(s) at subscription scope` });
+                            }
+                            if (contributors.length > 5) {
+                                findings.push({ check: "broad-contributor", severity: "high", finding: `${contributors.length} Contributor assignments at subscription scope — consider narrower roles` });
+                            }
+                            const total = assignments.length;
+                            findings.push({ check: "rbac-total", severity: "info", finding: `${total} role assignment(s) at subscription/MG scope` });
+                            if (total > 0 && owners.length <= 3) controlScores.push(2);
+                        }, { noSub: true });
+
+                        // Custom role definitions — tenant-scoped
+                        await runCheck("custom-roles", ["role", "definition", "list", "--custom-role-only", "--query", "[].{name:roleName, description:description}", "-o", "json"], (roles) => {
+                            if (roles.length > 0) {
+                                controlScores.push(3);
+                                findings.push({ check: "custom-roles", severity: "info", finding: `${roles.length} custom role definition(s): ${roles.slice(0, 3).map(r => r.name).join(", ")}${roles.length > 3 ? "..." : ""}` });
+                            } else {
+                                findings.push({ check: "no-custom-roles", severity: "medium", finding: "No custom roles — using only built-in roles. Custom roles improve least-privilege alignment" });
+                            }
+                        });
+                        break;
+                    }
+
+                    case "governance": {
+                        // Policy assignments
+                        await runCheck("policy-assignments", ["policy", "assignment", "list", "--query", "[].{name:name, displayName:displayName, scope:scope, enforcementMode:enforcementMode}", "-o", "json"], (assignments) => {
+                            if (assignments.length === 0) {
+                                findings.push({ check: "no-policies", severity: "critical", finding: "No Azure Policy assignments — no automated governance enforcement" });
+                                controlScores.push(1);
+                            } else {
+                                const enforced = assignments.filter(a => a.enforcementMode !== "DoNotEnforce");
+                                const auditOnly = assignments.filter(a => a.enforcementMode === "DoNotEnforce");
+                                findings.push({ check: "policy-count", severity: "info", finding: `${assignments.length} policy assignment(s): ${enforced.length} enforced, ${auditOnly.length} audit-only` });
+                                if (enforced.length > 0) {
+                                    controlScores.push(3);
+                                } else {
+                                    controlScores.push(2);
+                                    findings.push({ check: "audit-only-policies", severity: "high", finding: "All policies are audit-only (DoNotEnforce) — no preventive controls" });
+                                }
+                            }
+                        });
+
+                        // Policy compliance
+                        await runCheck("policy-compliance", ["policy", "state", "summarize", "--query", "value[?results.nonCompliantResources > `0`].{policy:policyDefinitionName, nonCompliant:results.nonCompliantResources}", "-o", "json"], (states) => {
+                            if (states.length > 0) {
+                                const totalNonCompliant = states.reduce((sum, s) => sum + (s.nonCompliant || 0), 0);
+                                findings.push({ check: "non-compliant", severity: "high", finding: `${totalNonCompliant} non-compliant resource(s) across ${states.length} policy definition(s)` });
+                            } else {
+                                findings.push({ check: "all-compliant", severity: "info", finding: "All resources compliant with assigned policies" });
+                                controlScores.push(4);
+                            }
+                        });
+
+                        // Resource locks
+                        await runCheck("resource-locks", ["lock", "list", "--query", "[].{name:name, level:level}", "-o", "json"], (locks) => {
+                            if (locks.length > 0) {
+                                controlScores.push(3);
+                                const deleteLocks = locks.filter(l => l.level === "CanNotDelete");
+                                const readOnlyLocks = locks.filter(l => l.level === "ReadOnly");
+                                findings.push({ check: "locks-exist", severity: "info", finding: `${locks.length} resource lock(s): ${deleteLocks.length} CanNotDelete, ${readOnlyLocks.length} ReadOnly` });
+                            } else {
+                                findings.push({ check: "no-locks", severity: "medium", finding: "No resource locks — critical resources can be accidentally deleted" });
+                            }
+                        });
+                        break;
+                    }
+
+                    case "security": {
+                        // Defender for Cloud pricing tiers
+                        await runCheck("defender-plans", ["security", "pricing", "list", "--query", "[].{name:name, tier:pricingTier}", "-o", "json"], (plans) => {
+                            const enabled = plans.filter(p => p.tier === "Standard");
+                            const free = plans.filter(p => p.tier === "Free");
+                            if (enabled.length === 0) {
+                                findings.push({ check: "no-defender", severity: "critical", finding: "Microsoft Defender for Cloud not enabled for any resource type" });
+                                controlScores.push(1);
+                            } else {
+                                controlScores.push(3);
+                                findings.push({ check: "defender-enabled", severity: "info", finding: `Defender enabled for ${enabled.length} plan(s): ${enabled.slice(0, 5).map(p => p.name).join(", ")}${enabled.length > 5 ? "..." : ""}` });
+                                if (free.length > 0) {
+                                    findings.push({ check: "defender-gaps", severity: "medium", finding: `${free.length} resource type(s) on Free tier: ${free.slice(0, 5).map(p => p.name).join(", ")}${free.length > 5 ? "..." : ""}` });
+                                } else {
+                                    controlScores.push(4);
+                                }
+                            }
+                        });
+
+                        // DDoS protection
+                        await runCheck("ddos", ["network", "ddos-protection", "list", "--query", "[].{name:name, provisioningState:provisioningState}", "-o", "json"], (plans) => {
+                            if (plans.length > 0) {
+                                controlScores.push(4);
+                                findings.push({ check: "ddos-enabled", severity: "info", finding: `DDoS Protection plan: ${plans.map(p => p.name).join(", ")}` });
+                            } else {
+                                findings.push({ check: "no-ddos", severity: "medium", finding: "No DDoS Protection plan — public-facing resources rely on Azure's basic DDoS protection only" });
+                            }
+                        });
+
+                        // Key Vault configuration
+                        await runCheck("keyvault-config", ["keyvault", "list", ...rgArgs, "--query", "[].{name:name, purgeProtection:properties.enablePurgeProtection, softDelete:properties.enableSoftDelete, rbac:properties.enableRbacAuthorization}", "-o", "json"], (vaults) => {
+                            for (const kv of vaults) {
+                                if (!kv.purgeProtection) {
+                                    findings.push({ check: "kv-no-purge-protection", severity: "high", resource: kv.name, finding: "Key Vault without purge protection — secrets can be permanently deleted" });
+                                }
+                                if (!kv.rbac) {
+                                    findings.push({ check: "kv-no-rbac", severity: "medium", resource: kv.name, finding: "Key Vault using access policies instead of RBAC — CAF recommends RBAC authorization" });
+                                }
+                            }
+                            if (vaults.length > 0 && vaults.every(v => v.purgeProtection && v.rbac)) {
+                                controlScores.push(4);
+                            }
+                        });
+                        break;
+                    }
+
+                    case "monitoring": {
+                        // Log Analytics workspaces
+                        await runCheck("law", ["monitor", "log-analytics", "workspace", "list", ...rgArgs, "--query", "[].{name:name, retention:retentionInDays, sku:sku.name, resourceGroup:resourceGroup}", "-o", "json"], (workspaces) => {
+                            if (workspaces.length === 0) {
+                                findings.push({ check: "no-law", severity: "critical", finding: "No Log Analytics workspace — no centralized logging infrastructure" });
+                                controlScores.push(1);
+                            } else {
+                                controlScores.push(2);
+                                for (const ws of workspaces) {
+                                    findings.push({ check: "law-exists", severity: "info", resource: ws.name, finding: `Log Analytics: ${ws.name} (retention: ${ws.retention}d, SKU: ${ws.sku})` });
+                                    if (ws.retention < 90) {
+                                        findings.push({ check: "law-low-retention", severity: "medium", resource: ws.name, finding: `Retention ${ws.retention} days — CAF recommends minimum 90 days for compliance` });
+                                    } else {
+                                        controlScores.push(3);
+                                    }
+                                }
+                            }
+                        });
+
+                        // Activity log alerts
+                        await runCheck("activity-alerts", ["monitor", "activity-log", "alert", "list", "--query", "[].{name:name, enabled:enabled, scopes:scopes}", "-o", "json"], (alerts) => {
+                            if (alerts.length === 0) {
+                                findings.push({ check: "no-activity-alerts", severity: "high", finding: "No activity log alerts — critical operations (delete RG, modify NSG) go unnoticed" });
+                            } else {
+                                const enabled = alerts.filter(a => a.enabled !== false);
+                                controlScores.push(3);
+                                findings.push({ check: "activity-alerts", severity: "info", finding: `${enabled.length} active activity log alert(s) out of ${alerts.length} total` });
+                            }
+                        });
+
+                        // Action groups
+                        await runCheck("action-groups", ["monitor", "action-group", "list", ...rgArgs, "--query", "[].{name:name, enabled:enabled, emailReceivers:emailReceivers[].name}", "-o", "json"], (groups) => {
+                            if (groups.length === 0) {
+                                findings.push({ check: "no-action-groups", severity: "high", finding: "No action groups — alerts have no notification targets" });
+                            } else {
+                                controlScores.push(3);
+                                findings.push({ check: "action-groups", severity: "info", finding: `${groups.length} action group(s) configured` });
+                            }
+                        });
+                        break;
+                    }
+                }
+
+                // Maturity = weakest control score (per agent spec)
+                const maturity = controlScores.length > 0 ? Math.min(...controlScores) : 1;
+                const critical = findings.filter(f => f.severity === "critical").length;
+                const high = findings.filter(f => f.severity === "high").length;
+                const medium = findings.filter(f => f.severity === "medium").length;
+                const low = findings.filter(f => f.severity === "low").length;
+                const snippet = `${args.category}: maturity ${maturity}/5, ${critical} critical, ${high} high, ${medium} medium, ${low} low`;
+
+                return JSON.stringify({
+                    category: args.category,
+                    scope: scopeLabel,
+                    task_id: args.task_id,
+                    maturity,
+                    summary: { critical, high, medium, low, total: findings.length },
+                    findings,
+                    sql: `INSERT INTO anvil_checks (task_id, phase, check_name, tool, command, exit_code, output_snippet, passed) VALUES ('${sqlEscape(args.task_id)}', 'after', 'assess-${sqlEscape(args.category)}', 'anvil_lz_scan', 'lz scan ${sqlEscape(args.category)} (scope: ${sqlEscape(scopeLabel)})', 0, '${sqlEscape(snippet)}', ${critical === 0 ? 1 : 0});`,
                 }, null, 2);
             },
         },

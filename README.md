@@ -16,6 +16,7 @@ Forge ships **evidence-first coding agents** for [GitHub Copilot CLI](https://do
 | **anvil-sovereign** | EU data sovereignty classification — guides data classification (C1–C4), maps to Azure sovereign levels (L1–L3), identifies GDPR/DORA/NIS2 requirements. Run before anvil-architect for EU workloads |
 | **anvil-diagnose** | Read-only Azure troubleshooting — traces root causes, never modifies resources |
 | **anvil-audit** | Read-only Azure compliance scanner — network, identity, data, monitoring, cost, policy |
+| **anvil-lz** | Read-only CAF landing zone assessment — diagnoses management group topology, networking, identity, governance, security, and monitoring alignment with the Cloud Adoption Framework. Produces maturity scorecards with remediation handoff to anvil-bicep |
 
 ## Install
 
@@ -67,16 +68,17 @@ make uninstall
 └───────┬────────────────────────────────────────────┬──────┘
         │                                            │
   ┌─────▼──────────┐                       ┌─────────▼────────┐
-  │ 8 Agents (.md) │                       │ Extension Runtime │
+  │ 9 Agents (.md) │                       │ Extension Runtime │
   │                │                       │                   │
-  │ code           │                       │ 19 tools:         │
+  │ code           │                       │ 22 tools:         │
   │ bicep          │                       │ git_check, verify │
   │ architect      │                       │ bicep_*, ops_*    │
   │ sovereign      │                       │ aks_*, architect_*│
   │ arc-ops        │                       │ sovereign_*       │
-  │ aks-ops        │                       │ audit_*           │
+  │ aks-ops        │                       │ audit_*, lz_*     │
   │ diagnose       │                       │ evidence_bundle   │
   │ audit          │                       │                   │
+  │ lz             │                       │                   │
   └────────────────┘                       └───────────────────┘
 ```
 
@@ -111,6 +113,9 @@ Every anvil follows the same discipline:
 | `anvil_sovereign_check` | Pre-flight sovereignty classification check |
 | `anvil_sovereign_validate` | Validate sovereignty profile YAML for consistency |
 | `anvil_audit_scan` | Run Azure compliance checks by category (network/identity/data/monitoring/cost/policy) |
+| `anvil_lz_check` | Pre-flight Azure auth + tenant + management group access for LZ assessment |
+| `anvil_lz_discover` | Discover landing zone topology (management group tree, subscription placement) |
+| `anvil_lz_scan` | Run CAF alignment checks by category (topology/networking/identity/governance/security/monitoring) |
 
 ## Customization
 
