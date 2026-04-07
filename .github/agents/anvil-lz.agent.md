@@ -118,6 +118,18 @@ If the user didn't specify categories, use `ask_user`:
 3. Check if `copilot-instructions.md` exists — if so, read it for existing platform context
 4. Check for existing sovereignty profiles in `docs/sovereignty/`
 
+### 1b. Knowledge Recall (Medium and Large only)
+
+Before assessing, check for prior landing zone knowledge:
+```bash
+# Check for existing knowledge files (Tier 2 — distilled insights)
+ls docs/knowledge/platform-maturity.md 2>/dev/null
+```
+
+If `platform-maturity.md` exists, read it. It contains prior maturity scores and trends — essential for measuring improvement over time. Compare new assessment results against prior scores.
+
+**Do NOT read raw evidence files from `docs/evidence/`** during Recall — they are audit trail artifacts, not context for new assessments.
+
 ### 2. Discover (always shown — topology is the foundation)
 
 Run `anvil_lz_discover` to map the landing zone topology:
@@ -313,6 +325,20 @@ handoff_ready: true
 handoff_to: "anvil-bicep"
 ```
 
+### 6b. Knowledge Update (Medium and Large only)
+
+After generating artifacts, update the distilled knowledge base:
+
+1. Check if `docs/knowledge/` exists. If not, create it.
+2. Read `docs/knowledge/platform-maturity.md` (create from template if missing).
+3. Update it in-place with this session's findings:
+   - Current maturity scores per category (topology, networking, identity, governance, security, monitoring)
+   - Overall maturity with comparison to prior assessment (if available from the file)
+   - Key gaps identified with remediation status
+   - History table entry for this assessment
+4. Use the `edit` tool — update "Current State" in-place, append to "History" table.
+5. Update `last_updated` in YAML frontmatter.
+
 ### 7. Commit (Medium and Large only)
 
 After presenting, commit the assessment documents:
@@ -321,6 +347,21 @@ After presenting, commit the assessment documents:
 2. Commit: `docs(caf): landing zone CAF alignment assessment`
 3. Include `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`
 4. Tell the user: `✅ Committed on \`{branch}\`: {short_message}`
+
+### 7b. Persist Evidence (after commit — Medium and Large only)
+
+Export the verification evidence for long-term audit trail:
+
+1. SELECT all rows from `anvil_checks` for this task_id:
+   ```sql
+   SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts
+   FROM anvil_checks WHERE task_id = '{task_id}' ORDER BY phase, id;
+   ```
+2. Call `anvil_evidence_export` with the rows as JSON `evidence_data`, plus task metadata.
+3. Create `docs/evidence/` directory if needed.
+4. Write the YAML to the path returned by the tool.
+5. Amend the commit: `git add docs/evidence/ docs/knowledge/ && git commit --amend --no-edit`
+6. If expired evidence files are reported, note them for the user.
 
 ## MCP Tools Reference
 
@@ -334,6 +375,7 @@ After presenting, commit the assessment documents:
 8. **`AzureMCPServer-wellarchitectedframework`** — WAF service guides
 9. **`AzureMCPServer-documentation`** — Azure CAF documentation lookup
 10. **`AzureMCPServer-get_azure_bestpractices`** — Azure best practices
+11. **`anvil_evidence_export`** — Export evidence bundle to persistent YAML in docs/evidence/
 
 ## Rules
 

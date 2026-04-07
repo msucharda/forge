@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS anvil_checks (
 );
 ```
 
+### 0b. Knowledge Recall
+
+Before investigating, check for prior incident knowledge:
+```bash
+# Check for existing knowledge files (Tier 2 — distilled insights)
+ls docs/knowledge/incident-patterns.md 2>/dev/null
+```
+
+If `incident-patterns.md` exists, read it. It contains patterns from prior diagnoses — recurring root causes, known infrastructure weak points, services with frequent issues. This helps avoid re-investigating known problems and speeds up diagnosis.
+
+**Do NOT read raw evidence files from `docs/evidence/`** during Recall.
+
 ## The Diagnosis Loop
 
 Steps 0–3 produce **minimal output** — use `report_intent` to show progress, call tools as needed, but don't emit conversational text until the final report.
@@ -201,6 +213,35 @@ INSERT verification result with `phase = 'review'`, `check_name = 'diagnosis-ver
 - **Medium**: Root cause identified but: timeline has gaps, multiple changes occurred simultaneously, or dependent service health couldn't be fully verified.
 - **Low**: Root cause is a hypothesis — insufficient evidence to confirm. **If Low, state what additional signals would confirm or deny it.**
 
+### Knowledge Update (Medium and Large only)
+
+After presenting the diagnosis:
+
+1. Check if `docs/knowledge/` exists. If not, create it.
+2. Read `docs/knowledge/incident-patterns.md` (create from template if missing).
+3. Update it in-place with this session's findings:
+   - Root cause pattern (what failed and why)
+   - Affected resources and services
+   - Resolution approach (what agent was recommended for the fix)
+   - Whether this is a recurring pattern (check if similar entries exist)
+4. Use the `edit` tool — update in-place, do NOT append-only.
+5. Update `last_updated` in YAML frontmatter.
+
+### Persist Evidence (Medium and Large only)
+
+Export the diagnosis evidence for post-incident review:
+
+1. SELECT all rows from `anvil_checks` for this task_id:
+   ```sql
+   SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts
+   FROM anvil_checks WHERE task_id = '{task_id}' ORDER BY phase, id;
+   ```
+2. Call `anvil_evidence_export` with the rows as JSON, plus task metadata.
+3. Create `docs/evidence/` directory if needed.
+4. Write the YAML to the path returned by the tool.
+5. Stage and commit: `git add docs/evidence/ docs/knowledge/ && git commit -m "docs(diagnose): {task_id} diagnosis evidence"`
+6. Include `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer.
+
 ## MCP Tools Reference
 
 Use these tools for evidence. Do NOT guess at resource states.
@@ -212,6 +253,7 @@ Use these tools for evidence. Do NOT guess at resource states.
 5. **`anvil_verify`** — Run any `az` read command and format for ledger INSERT
 6. **`anvil_aks_inventory`** — AKS cluster and node pool state
 7. **`anvil_ops_inventory`** — Arc server connection state
+8. **`anvil_evidence_export`** — Export evidence bundle to persistent YAML in docs/evidence/
 
 ## Rules
 

@@ -70,14 +70,14 @@ make uninstall
   ┌─────▼──────────┐                       ┌─────────▼────────┐
   │ 9 Agents (.md) │                       │ Extension Runtime │
   │                │                       │                   │
-  │ code           │                       │ 22 tools:         │
+  │ code           │                       │ 23 tools:         │
   │ bicep          │                       │ git_check, verify │
   │ architect      │                       │ bicep_*, ops_*    │
   │ sovereign      │                       │ aks_*, architect_*│
   │ arc-ops        │                       │ sovereign_*       │
   │ aks-ops        │                       │ audit_*, lz_*     │
   │ diagnose       │                       │ evidence_bundle   │
-  │ audit          │                       │                   │
+  │ audit          │                       │ evidence_export   │
   │ lz             │                       │                   │
   └────────────────┘                       └───────────────────┘
 ```
@@ -90,6 +90,18 @@ Every anvil follows the same discipline:
 4. **Verify** — re-run checks, compare to baseline
 5. **Evidence bundle** — produce a ledger diff the reviewer can audit
 
+## Knowledge architecture
+
+Decision agents (architect, audit, sovereign, lz, diagnose) persist knowledge across sessions using a three-tier model:
+
+| Tier | Location | Purpose | Read when |
+|------|----------|---------|-----------|
+| **1** | `.github/copilot-instructions.md` | Canonical platform context (naming, CIDR, services) | Every session |
+| **2** | `docs/knowledge/*.md` | Distilled insights — maturity scores, security posture, decision index | Recall step (selective) |
+| **3** | `docs/evidence/*.yaml` | Raw verification evidence (check results, reviewer verdicts) | Only when investigating a prior decision |
+
+Knowledge files (Tier 2) use Obsidian-compatible markdown: YAML frontmatter, `[[wikilinks]]`, tags. They are updated in-place (always current, bounded size). Evidence files (Tier 3) auto-expire after 6 months via the `expires_at` field.
+
 ## Extension tools
 
 | Tool | Purpose |
@@ -97,6 +109,7 @@ Every anvil follows the same discipline:
 | `anvil_git_check` | Pre-flight git hygiene |
 | `anvil_verify` | Run a command, format output for the SQL ledger |
 | `anvil_evidence_bundle` | Generate the evidence bundle query |
+| `anvil_evidence_export` | Export evidence to persistent YAML in docs/evidence/ with auto-expiry |
 | `anvil_bicep_lint` | `az bicep lint` with structured output |
 | `anvil_bicep_build` | Compile Bicep → ARM, report errors |
 | `anvil_bicep_param_check` | Cross-check `.bicep` params vs `.bicepparam` files |

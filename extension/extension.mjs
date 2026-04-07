@@ -98,6 +98,7 @@ const session = await joinSession({
                     "Anvil extension is active. Custom tools available:",
                     "- anvil_git_check: pre-flight git hygiene",
                     "- anvil_verify: run a command and format for ledger INSERT",
+                    "- anvil_evidence_export: export evidence to persistent YAML in docs/evidence/ with auto-expiry",
                     "- anvil_bicep_lint: Bicep lint with structured output",
                     "- anvil_bicep_build: Bicep build (compile to ARM) with structured output",
                     "- anvil_bicep_param_check: cross-reference params vs .bicepparam files",
@@ -305,6 +306,119 @@ const session = await joinSession({
                     `**Confidence**: High / Medium / Low`,
                     `**Rollback**: \`git checkout HEAD -- {files}\``,
                 ].filter(Boolean).join("\n");
+            },
+        },
+
+        {
+            name: "anvil_evidence_export",
+            description: "Export anvil_checks ledger data to a YAML evidence file for persistence in docs/evidence/. Call after presenting the evidence bundle. The agent must SELECT from anvil_checks and pass the rows as JSON. Also lists any expired evidence files in the repo.",
+            parameters: {
+                type: "object",
+                properties: {
+                    task_id: { type: "string", description: "Task ID slug" },
+                    agent: { type: "string", description: "Agent name (e.g., anvil-architect)" },
+                    task_size: { type: "string", enum: ["Small", "Medium", "Large"], description: "Task size" },
+                    risk: { type: "string", enum: ["green", "yellow", "red"], description: "Risk level" },
+                    confidence: { type: "string", enum: ["High", "Medium", "Low"], description: "Confidence level" },
+                    evidence_data: { type: "string", description: "JSON string of anvil_checks rows from SELECT phase, check_name, tool, command, exit_code, passed, output_snippet, ts" },
+                    artifacts: { type: "string", description: "Comma-separated list of artifact file paths produced" },
+                },
+                required: ["task_id", "agent", "task_size", "risk", "confidence", "evidence_data"],
+            },
+            handler: async (args) => {
+                const cwd = process.cwd();
+                const evidenceDir = join(cwd, "docs", "evidence");
+                const filePath = `docs/evidence/evidence-${args.task_id}.yaml`;
+
+                // Parse evidence data
+                let rows;
+                try { rows = JSON.parse(args.evidence_data); } catch {
+                    return JSON.stringify({ error: "Failed to parse evidence_data JSON", passed: false }, null, 2);
+                }
+
+                // Compute expires_at (6 months from now)
+                const now = new Date();
+                const expiresAt = new Date(now);
+                expiresAt.setMonth(expiresAt.getMonth() + 6);
+
+                // Group rows by phase
+                const baseline = rows.filter(r => r.phase === "baseline");
+                const verification = rows.filter(r => r.phase === "after");
+                const reviews = rows.filter(r => r.phase === "review");
+
+                // Build YAML manually (no dependency needed)
+                const yamlLines = [
+                    `# Anvil Evidence Bundle — ${args.task_id}`,
+                    `# Auto-generated. Do not edit manually.`,
+                    ``,
+                    `evidence_id: "${sqlEscape(args.task_id)}"`,
+                    `agent: "${sqlEscape(args.agent)}"`,
+                    `created_at: "${now.toISOString()}"`,
+                    `expires_at: "${expiresAt.toISOString()}"`,
+                    `task_size: "${args.task_size}"`,
+                    `risk: "${args.risk}"`,
+                    `confidence: "${args.confidence}"`,
+                    ``,
+                ];
+
+                if (args.artifacts) {
+                    yamlLines.push(`artifacts_produced:`);
+                    for (const a of args.artifacts.split(",").map(s => s.trim()).filter(Boolean)) {
+                        yamlLines.push(`  - "${sqlEscape(a)}"`);
+                    }
+                    yamlLines.push(``);
+                }
+
+                const renderPhase = (phaseName, phaseRows) => {
+                    yamlLines.push(`${phaseName}:`);
+                    if (phaseRows.length === 0) {
+                        yamlLines.push(`  []`);
+                    } else {
+                        for (const r of phaseRows) {
+                            yamlLines.push(`  - check_name: "${sqlEscape(r.check_name || "")}"`);
+                            yamlLines.push(`    tool: "${sqlEscape(r.tool || "")}"`);
+                            if (r.command) yamlLines.push(`    command: "${sqlEscape(r.command)}"`);
+                            if (r.exit_code !== undefined && r.exit_code !== null) yamlLines.push(`    exit_code: ${r.exit_code}`);
+                            yamlLines.push(`    passed: ${r.passed ? "true" : "false"}`);
+                            if (r.output_snippet) yamlLines.push(`    output_snippet: "${sqlEscape(r.output_snippet).slice(0, 300)}"`);
+                            if (r.ts) yamlLines.push(`    timestamp: "${r.ts}"`);
+                        }
+                    }
+                    yamlLines.push(``);
+                };
+
+                renderPhase("baseline", baseline);
+                renderPhase("verification", verification);
+                renderPhase("reviews", reviews);
+
+                const yamlContent = yamlLines.join("\n");
+
+                // Check for expired evidence files
+                const expired = [];
+                if (existsSync(evidenceDir)) {
+                    try {
+                        const files = readdirSync(evidenceDir).filter(f => f.startsWith("evidence-") && f.endsWith(".yaml"));
+                        for (const f of files) {
+                            try {
+                                const content = readFileSync(join(evidenceDir, f), "utf-8");
+                                const match = content.match(/^expires_at:\s*"([^"]+)"/m);
+                                if (match) {
+                                    const expDate = new Date(match[1]);
+                                    if (expDate < now) {
+                                        expired.push({ file: f, expires_at: match[1] });
+                                    }
+                                }
+                            } catch { /* skip unreadable files */ }
+                        }
+                    } catch { /* directory read failed */ }
+                }
+
+                return JSON.stringify({
+                    file_path: filePath,
+                    yaml_content: yamlContent,
+                    expired_evidence: expired,
+                    instruction: `Write the yaml_content to '${filePath}' using the create tool (create docs/evidence/ directory first if needed). Then git add and amend the commit. If expired_evidence is non-empty, consider archiving or deleting those files.`,
+                }, null, 2);
             },
         },
 
